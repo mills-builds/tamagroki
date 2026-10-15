@@ -208,7 +208,7 @@ patches/    full diff of firmware/ against upstream xiaozhi-esp32 d7a1c05
 relay/      Python relay (tamagroki_relay) + tests
 cad/        v0.5 case: CadQuery source, STEP/STL, sliced 3MF, renders
 tools/      serial_log.py
-images/     photos (TODO)
+images/     photos and renders
 ```
 
 ## License
