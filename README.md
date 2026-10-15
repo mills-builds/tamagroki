@@ -51,6 +51,8 @@ It's a plain, general-purpose Grok voice chat with the persona "Tamagroki", and 
 
 ## Printing the case
 
+<p align="center"><img src="images/cad-render.png" alt="Tamagroki case, CAD render" width="360"></p>
+
 All files are in [`cad/`](cad/). The design notes and fit checks are in [`cad/NOTES.md`](cad/NOTES.md), and the parametric CadQuery source is [`cad/cube_v05r3.py`](cad/cube_v05r3.py).
 
 | Part | File | Print |
@@ -63,6 +65,10 @@ All files are in [`cad/`](cad/). The design notes and fit checks are in [`cad/NO
 `cad/print/tamagroki_v05r2_sleeve_and_back.gcode.3mf` is the sliced r2 plate (sleeve + back plate). Use it for the back plate. The r3 sleeve replaces the r2 one.
 
 **Settings** (Bambu X1C, Textured PEI, PLA): 0.12 mm layers, 0.2 mm first layer at 30 mm/s (first-layer walls at 20 mm/s), Arachne walls with thin-wall detection on, 3 walls, 15% infill, 5 mm brim, bed 65/60 °C, tree supports on the build plate only. Other printers work too. The front lip is thin (1.64 mm), so keep the first layer slow.
+
+![Fresh prints on the bed](images/print-on-bed.jpg)
+
+*Straight off the bed: the front sleeve (left, printed face down) and the back plate standing on its bottom face (right), with the tree supports still attached. The supports snap off by hand.*
 
 **Assembly:** it's a slide-in case with a snap-on back plate.
 1. Hold the 3 button pins in their pockets (a bit of tape over the top helps).
@@ -181,7 +187,7 @@ cd relay && .venv/bin/python -m pytest -q
 ## Photos
 
 <!-- TODO(Josh): add photos to images/ (see images/README.md) and uncomment -->
-<!-- ![Asleep](images/sleeping.jpg) ![Printing](images/printing.jpg) -->
+<!-- ![Asleep](images/sleeping.jpg) -->
 
 Face states from the desktop simulator (`firmware/sim/face`):
 
