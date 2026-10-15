@@ -1,0 +1,3260 @@
+diff -ruN '--exclude=out' a/.gitignore b/.gitignore
+--- a/.gitignore	2026-10-14 19:51:46.000000000 -0500
++++ b/.gitignore	2026-10-15 16:16:08.119756022 -0500
+@@ -18,3 +18,5 @@
+ *.bin
+ mmap_generate_*.h
+ .clangd
++tamagroki/sdkconfig.local
++dist/
+diff -ruN '--exclude=out' a/README.md b/README.md
+--- a/README.md	2026-10-14 19:51:46.000000000 -0500
++++ b/README.md	2026-10-15 16:16:08.119756022 -0500
+@@ -1,172 +1,110 @@
+-# An MCP-based Chatbot
++# Tamagroki firmware (modified xiaozhi-esp32)
+ 
+-(English | [中文](README_zh.md) | [日本語](README_ja.md))
++See the [top-level README](../README.md) for the project overview, parts, printing, flashing and relay setup. This file covers the firmware internals.
+ 
+-## Introduction
++A lavender cube with two tilted black pill eyes. Say **"Yo Grok"** and talk to Grok in real time (full duplex, so you can interrupt it). Tamagroki is a plain, general-purpose Grok voice assistant; say **"Bye Grok"** to end the conversation.
+ 
+-👉 [Human: Give AI a camera vs AI: Instantly finds out the owner hasn't washed hair for three days【bilibili】](https://www.bilibili.com/video/BV1bpjgzKEhd/)
++```
++ ┌──────── cube (ESP32-S3) ────────┐   Wi-Fi    ┌────────── Mac: relay/ ──────────┐   wss   ┌──────────────────┐
++ │ MultiNet "yo grok" wake word     │──opus 16k─▶│ xiaozhi WS server + OTA endpoint │──pcm──▶│ xAI realtime voice│
++ │ ES7210 AEC, realtime listening   │◀─opus 24k──│ server-VAD barge-in, pacing      │◀─pcm───│ grok-voice-latest │
++ │ LVGL pill-eye face (5 states)    │◀─face evts─│ optional web_search, idle close  │        └──────────────────┘
++ │ QMI8658 pick-up-to-wake (opt.)   │            │ "bye grok" ends the conversation │
++ └──────────────────────────────────┘            └──────────────────────────────────┘
++```
+ 
+-👉 [Handcraft your AI girlfriend, beginner's guide【bilibili】](https://www.bilibili.com/video/BV1XnmFYLEJN/)
++This is a vendored, modified copy of [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) at commit `d7a1c05` (MIT, see `LICENSE`). The upstream README is kept as `README.upstream.md`; `../patches/` has the full diff against upstream. Everything specific to the cube is in:
+ 
+-As a voice interaction entry, the XiaoZhi AI chatbot leverages the AI capabilities of large models like Qwen / DeepSeek, and achieves multi-terminal control via the MCP protocol.
++| Path | What |
++|---|---|
++| `main/tamagroki/grok_face.{h,cc}` | The face, written in pure LVGL v9 (shared with the simulator) |
++| `main/tamagroki/grok_face_display.{h,cc}` | Replaces xiaozhi's chat UI and maps device state to the face |
++| `main/tamagroki/qmi8658_pickup.{h,cc}` | IMU pick-up detector |
++| `main/tamagroki/tamagroki_audio.cc` | Speaker loudness, used for the speaking bounce |
++| `main/boards/waveshare/esp32-s3-touch-amoled-2.16/*.cc` | Wires the face and IMU into the stock board |
++| `main/Kconfig.projbuild` → menu **Tamagroki** (Tamagroki settings) | Name, colour, tilt, subtitles, IMU |
++| `tamagroki/sdkconfig.tamagroki` | Build preset: board, custom wake word, MN7-EN, AEC, relay URL |
++| `build.sh`, `flash.sh`, `test.sh` | Build, flash, and desktop tests |
++| `../relay/` | Python relay for the Mac, plus tests (mock device, mock xAI) |
++| `sim/face/` | Headless LVGL simulator that renders PNG/GIF previews of every face state |
+ 
+-<img src="docs/mcp-based-graph.jpg" alt="Control everything via MCP" width="320">
++## 1. Relay
+ 
+-## Recent Updates
++See `../relay/` and the top-level README.
+ 
+-- The project now requires ESP-IDF v6.0.1 or later. [ESP-IDF v6.1](https://github.com/espressif/esp-idf/releases/tag/v6.1) is the recommended SDK. ESP-IDF 5.x is no longer supported. The current matrix contains 171 variants; ESP32-S31 builds require IDF 6.1 or later.
+-- MQTT and BluFi cryptographic code has migrated to PSA Crypto. IDF 6 component splits and third-party dependency compatibility have also been addressed.
+-- Audio pipeline concurrency, MQTT/UDP packet validation, and release-matrix selection have been hardened.
+-- ESP32-P4 Rev1 and Rev3 are both supported on IDF 6 with ESP-SR 2.4.7.
++## 2. Build and flash the cube
+ 
+-### Features Implemented
++You need ESP-IDF **v6.1** (xiaozhi now requires 6.0.1 or newer):
+ 
+-- Wi-Fi, wired Ethernet, USB RNDIS, and ML307/EC801E or NT26 Cat.1 4G networking; supported boards can switch between Wi-Fi and 4G
+-- Offline voice wake-up with [ESP-SR](https://github.com/espressif/esp-sr), including customizable wake words
+-- Two communication transports: [WebSocket](docs/websocket.md) and [MQTT + UDP](docs/mqtt-udp.md)
+-- Opus audio streaming with conventional streaming ASR + LLM + TTS pipelines and Realtime end-to-end voice models; AEC-capable hardware supports realtime full-duplex interaction
+-- Speaker recognition, identifies the current speaker [3D Speaker](https://github.com/modelscope/3D-Speaker)
+-- OLED / LCD displays with emoji and rich expression support, plus camera vision input on supported boards
+-- Battery display and power management
+-- 39 interface languages, with localized voice prompts where available and English fallback
+-- ESP32, ESP32-C3, ESP32-C5, ESP32-C6, ESP32-S3, and ESP32-P4 chip platforms
+-- Wi-Fi provisioning through hotspot or BluFi
+-- Device-side MCP for device control (Speaker, LED, Servo, GPIO, etc.)
+-- Cloud-side MCP to extend large model capabilities (smart home control, PC desktop operation, knowledge search, email, etc.)
+-- Customizable wake words, fonts, emojis, and chat backgrounds with online web-based editing ([Custom Assets Generator](https://github.com/78/xiaozhi-assets-generator))
++```bash
++mkdir -p ~/esp && cd ~/esp && git clone -b v6.1 --recursive https://github.com/espressif/esp-idf.git
++cd esp-idf && ./install.sh esp32s3 && . ./export.sh
++```
+ 
+-## Hardware
++Connect the cube over USB-C, then:
+ 
+-### Breadboard DIY Practice
++```bash
++./flash.sh /dev/cu.usbmodem*          # builds with OTA URL http://<this-mac>.local:8765/xiaozhi/ota/, flashes, opens the monitor
++```
+ 
+-See the Feishu document tutorial:
++- To use a fixed IP: `TAMAGROKI_RELAY_URL=http://<relay-ip>:8765/xiaozhi/ota/ ./flash.sh /dev/cu.usbmodem1101`
++- If the port doesn't show up: hold **BOOT**, tap **PWR/RESET**, release BOOT, then retry.
++- `./flash.sh PORT --no-build` writes the existing `build/merged-binary.bin` with esptool. This is a full-image write, so it also clears saved Wi-Fi.
+ 
+-👉 ["XiaoZhi AI Chatbot Encyclopedia"](https://ccnphfhqs21z.feishu.cn/wiki/F5krwD16viZoF0kKkvDcrZNYnhb?from=from_copylink)
++**First boot:** the cube opens a Wi-Fi access point and shows its name under the eyes. Join it from your phone, pick your Wi-Fi, and if needed set **Advanced → OTA URL** to the relay URL that `run.sh` printed. You can change the relay that way without rebuilding. The cube then fetches `/xiaozhi/ota/` from the relay, gets the websocket URL, and the relay never offers firmware updates.
+ 
+-Breadboard demo:
++**Buttons:** BOOT click starts or stops a conversation (or enters Wi-Fi setup during boot). BOOT double-click toggles device AEC. PWR hold for 4 s powers off.
+ 
+-![Breadboard Demo](docs/v1/wiring2.jpg)
++## 3. Configuring the name, wake word, colour and face
+ 
+-### Supports 138 Board Directories and 171 Release Variants (Partial List)
++Everything lives in Kconfig (`idf.py menuconfig` → *Xiaozhi Assistant* → *Tamagroki* and *Wake Word*). It is easiest through `build.sh` environment variables or a gitignored `tamagroki/sdkconfig.local`:
+ 
+-- <a href="https://oshwhub.com/li-chuang-kai-fa-ban/li-chuang-shi-zhan-pai-esp32-s3-kai-fa-ban" target="_blank" title="LiChuang ESP32-S3 Development Board">LiChuang ESP32-S3 Development Board</a>
+-- <a href="https://github.com/espressif/esp-box" target="_blank" title="Espressif ESP32-S3-BOX-3">Espressif ESP32-S3-BOX-3</a>
+-- <a href="https://docs.m5stack.com/zh_CN/core/CoreS3" target="_blank" title="M5Stack CoreS3">M5Stack CoreS3</a>
+-- <a href="https://docs.m5stack.com/en/atom/Atomic%20Echo%20Base" target="_blank" title="AtomS3R + Echo Base">M5Stack AtomS3R + Echo Base</a>
+-- <a href="https://gf.bilibili.com/item/detail/1108782064" target="_blank" title="Magic Button 2.4">Magic Button 2.4</a>
+-- <a href="https://www.waveshare.net/shop/ESP32-S3-Touch-AMOLED-1.8.htm" target="_blank" title="Waveshare ESP32-S3-Touch-AMOLED-1.8">Waveshare ESP32-S3-Touch-AMOLED-1.8</a>
+-- <a href="https://github.com/Xinyuan-LilyGO/T-Circle-S3" target="_blank" title="LILYGO T-Circle-S3">LILYGO T-Circle-S3</a>
+-- <a href="https://oshwhub.com/tenclass01/xmini_c3" target="_blank" title="XiaGe Mini C3">XiaGe Mini C3</a>
+-- <a href="https://oshwhub.com/movecall/cuican-ai-pendant-lights-up-y" target="_blank" title="Movecall CuiCan ESP32S3">CuiCan AI Pendant</a>
+-- <a href="https://github.com/WMnologo/xingzhi-ai" target="_blank" title="WMnologo-Xingzhi-1.54">WMnologo-Xingzhi-1.54TFT</a>
+-- <a href="https://www.seeedstudio.com/SenseCAP-Watcher-W1-A-p-5979.html" target="_blank" title="SenseCAP Watcher">SenseCAP Watcher</a>
+-- <a href="https://www.bilibili.com/video/BV1BHJtz6E2S/" target="_blank" title="ESP-HI Low Cost Robot Dog">ESP-HI Low Cost Robot Dog</a>
++```bash
++TAMAGROKI_NAME=Jarvis TAMAGROKI_WAKE="hey jarvis" TAMAGROKI_COLOR=0x9B7FE0 ./flash.sh /dev/cu.usbmodem*
++```
+ 
+-<div style="display: flex; justify-content: space-between;">
+-  <a href="docs/v1/lichuang-s3.jpg" target="_blank" title="LiChuang ESP32-S3 Development Board">
+-    <img src="docs/v1/lichuang-s3.jpg" width="240" />
+-  </a>
+-  <a href="docs/v1/espbox3.jpg" target="_blank" title="Espressif ESP32-S3-BOX3">
+-    <img src="docs/v1/espbox3.jpg" width="240" />
+-  </a>
+-  <a href="docs/v1/m5cores3.jpg" target="_blank" title="M5Stack CoreS3">
+-    <img src="docs/v1/m5cores3.jpg" width="240" />
+-  </a>
+-  <a href="docs/v1/atoms3r.jpg" target="_blank" title="AtomS3R + Echo Base">
+-    <img src="docs/v1/atoms3r.jpg" width="240" />
+-  </a>
+-  <a href="docs/v1/magiclick.jpg" target="_blank" title="Magic Button 2.4">
+-    <img src="docs/v1/magiclick.jpg" width="240" />
+-  </a>
+-  <a href="docs/v1/waveshare.jpg" target="_blank" title="Waveshare ESP32-S3-Touch-AMOLED-1.8">
+-    <img src="docs/v1/waveshare.jpg" width="240" />
+-  </a>
+-  <a href="docs/v1/lilygo-t-circle-s3.jpg" target="_blank" title="LILYGO T-Circle-S3">
+-    <img src="docs/v1/lilygo-t-circle-s3.jpg" width="240" />
+-  </a>
+-  <a href="docs/v1/xmini-c3.jpg" target="_blank" title="XiaGe Mini C3">
+-    <img src="docs/v1/xmini-c3.jpg" width="240" />
+-  </a>
+-  <a href="docs/v1/movecall-cuican-esp32s3.jpg" target="_blank" title="CuiCan">
+-    <img src="docs/v1/movecall-cuican-esp32s3.jpg" width="240" />
+-  </a>
+-  <a href="docs/v1/wmnologo_xingzhi_1.54.jpg" target="_blank" title="WMnologo-Xingzhi-1.54">
+-    <img src="docs/v1/wmnologo_xingzhi_1.54.jpg" width="240" />
+-  </a>
+-  <a href="docs/v1/sensecap_watcher.jpg" target="_blank" title="SenseCAP Watcher">
+-    <img src="docs/v1/sensecap_watcher.jpg" width="240" />
+-  </a>
+-  <a href="docs/v1/esp-hi.jpg" target="_blank" title="ESP-HI Low Cost Robot Dog">
+-    <img src="docs/v1/esp-hi.jpg" width="240" />
+-  </a>
+-</div>
++| Kconfig | Default | |
++|---|---|---|
++| `CONFIG_TAMAGROKI_NAME` | `Tamagroki` | Bot name (also set `TAMAGROKI_NAME` on the relay) |
++| `CONFIG_CUSTOM_WAKE_WORD` | `yo grok;yo grog;yoh grok;yo grawk` | MultiNet-7 English command phrases, lowercase, `;`-separated, all wake |
++| `CONFIG_CUSTOM_WAKE_WORD_THRESHOLD` | `13` (%) | Lower values are more sensitive and give more false wakes |
++| `CONFIG_CUSTOM_WAKE_WORD_SW_GAIN` | `3` | Software gain into MultiNet only (the mic is quiet; ES7210 PGA is also raised to 37.5 dB on this board) |
++| `CONFIG_TAMAGROKI_BG_COLOR` | `0x9B7FE0` | Solid background colour |
++| `CONFIG_TAMAGROKI_EYE_TILT_DEG` | `12` | Pill lean; positive tilts the tops to the right |
++| `CONFIG_TAMAGROKI_SHOW_SUBTITLES` | `n` | Shows STT/TTS text under the eyes |
++| `CONFIG_TAMAGROKI_IMU_WAKE` / `_THRESHOLD_MG` | `n` / `350` | Picking the cube up starts a conversation (off: it false-triggered) |
+ 
+-## Software
++**Face states** (preview them with `./test.sh` or `../relay/.venv/bin/python sim/face/render.py`; needs cmake + a C++ compiler + Pillow, which writes to `sim/face/out/`):
+ 
+-### Firmware Flashing
++- **idle (no conversation open):** shows the **sleep** face, so awake eyes always mean "listening"
++- **listening:** taller, raised eyes with a pulse
++- **thinking:** eyes look up-right and squish alternately. The relay sends this after you stop talking.
++- **speaking:** eyes bounce with the real speaker loudness
++- **sleep:** closed eyes with drifting "z z z", shown whenever no conversation is open (wake word armed)
++- **busy:** connecting
+ 
+-For beginners, it is recommended to use the firmware that can be flashed without setting up a development environment.
++### Wake-word tuning
+ 
+-The firmware connects to the official [xiaozhi.me](https://xiaozhi.me) server by default. Personal users can register an account to use the Qwen real-time model for free.
++"Yo Grok" uses ESP-SR **MultiNet7 (English)** as a custom command, so no training is needed. Tune it on the device:
+ 
+-👉 [Beginner's Firmware Flashing Guide](https://ccnphfhqs21z.feishu.cn/wiki/Zpz4wXBtdimBrLk25WdcXzxcnNS)
++1. Watch `idf.py monitor` for `CustomWakeWord` detections while you say the phrase at different distances, and while music or TV plays.
++2. If it misses you, lower `CONFIG_CUSTOM_WAKE_WORD_THRESHOLD` (try 10 to 15). If it false-triggers, raise it (try 30 to 40).
++3. Alternative spellings sometimes match better; add them `;`-separated (e.g. `yo grog` was what matched in testing). Each extra phrase adds false-trigger risk.
++4. For real robustness, a trained microWakeWord model would do better.
+ 
+-### Development Environment
++Audio-path changes for the wake word: AEC is off while idle (the AEC NLP was eating speech), MultiNet's window restarts at VAD speech onset with the VAD pre-roll, ES7210 PGA at 37.5 dB, and x3 software gain into MultiNet only.
+ 
+-- Cursor or VSCode
+-- Install the ESP-IDF plugin. The minimum SDK is [ESP-IDF v6.0.1](https://github.com/espressif/esp-idf/releases/tag/v6.0.1); [ESP-IDF v6.1](https://github.com/espressif/esp-idf/releases/tag/v6.1) is recommended. ESP-IDF 5.x is not supported.
+-- Linux is better than Windows for faster compilation and fewer driver issues
+-- This project uses Google C++ code style, please ensure compliance when submitting code
++## 4. Tests on a desktop (no hardware)
+ 
+-### Developer Documentation
++```bash
++./test.sh        # ../relay pytest + face simulator frames
++```
+ 
+-- [Custom Board Guide](docs/custom-board.md) - Learn how to create custom boards for XiaoZhi AI
+-- [MCP Protocol IoT Control Usage](docs/mcp-usage.md) - Learn how to control IoT devices via MCP protocol
+-- [MCP Protocol Interaction Flow](docs/mcp-protocol.md) - Device-side MCP protocol implementation
+-- [MQTT + UDP Hybrid Communication Protocol Document](docs/mqtt-udp.md)
+-- [A detailed WebSocket communication protocol document](docs/websocket.md)
++- `../relay/tests/test_relay.py` runs a mock cube that speaks the exact xiaozhi WS and opus protocol, and a mock xAI realtime server (energy VAD, audio deltas, cancellation). It covers the OTA response, health, persona defaults, a full conversation turn, barge-in (cancels the response and cuts playback short), "bye grok" closing the conversation, and opus round trips.
++- `sim/face` builds `grok_face.cc` against desktop LVGL 9.5 and renders a scripted timeline (idle → listening → thinking → speaking → idle → sleep) to `sim/face/out/*.png|gif`.
+ 
+-## Large Model Configuration
++## Known limitations / TODO
+ 
+-If you already have a XiaoZhi AI chatbot device and have connected to the official server, you can log in to the [xiaozhi.me](https://xiaozhi.me) console for configuration.
+-
+-👉 [Backend Operation Video Tutorial (Old Interface)](https://www.bilibili.com/video/BV1jUCUY2EKM/)
+-
+-## Related Open Source Projects
+-
+-For server deployment on personal computers, refer to the following open-source projects:
+-
+-- [xinnan-tech/xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) Python server
+-- [joey-zhou/xiaozhi-esp32-server-java](https://github.com/joey-zhou/xiaozhi-esp32-server-java) Java server
+-- [AnimeAIChat/xiaozhi-server-go](https://github.com/AnimeAIChat/xiaozhi-server-go) Golang server
+-- [hackers365/xiaozhi-esp32-server-golang](https://github.com/hackers365/xiaozhi-esp32-server-golang) Golang server
+-
+-Other client projects using the XiaoZhi communication protocol:
+-
+-- [huangjunsen0406/py-xiaozhi](https://github.com/huangjunsen0406/py-xiaozhi) Python client
+-- [TOM88812/xiaozhi-android-client](https://github.com/TOM88812/xiaozhi-android-client) Android client
+-- [100askTeam/xiaozhi-linux](http://github.com/100askTeam/xiaozhi-linux) Linux client by 100ask
+-- [78/xiaozhi-sf32](https://github.com/78/xiaozhi-sf32) Bluetooth chip firmware by Sichuan
+-- [QuecPython/solution-xiaozhiAI](https://github.com/QuecPython/solution-xiaozhiAI) QuecPython firmware by Quectel
+-
+-Custom Assets Tools:
+-
+-- [78/xiaozhi-assets-generator](https://github.com/78/xiaozhi-assets-generator) Custom Assets Generator (Wake words, fonts, emojis, backgrounds)
+-
+-## About the Project
+-
+-This is an open-source ESP32 project, released under the MIT license, allowing anyone to use it for free, including for commercial purposes.
+-
+-We hope this project helps everyone understand AI hardware development and apply rapidly evolving large language models to real hardware devices.
+-
+-If you have any ideas or suggestions, please feel free to raise Issues or join our [Discord](https://discord.gg/C759fGMBcZ) or QQ group: 1095994019
+-
+-## Star History
+-
+-<a href="https://star-history.com/#78/xiaozhi-esp32&Date">
+- <picture>
+-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date&theme=dark" />
+-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
+-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
+- </picture>
+-</a>
++- The QMI8658 pick-up wake is disabled by default because it false-triggered.
++- MultiNet custom-phrase accuracy is lower than a trained WakeNet or microWakeWord model.
++- Upstream fix included: the 2.16 board was missing from `USE_DEVICE_AEC`'s Kconfig dependency list, so `CONFIG_USE_DEVICE_AEC=y` from its `config.json` was silently dropped.
+diff -ruN '--exclude=out' a/README.upstream.md b/README.upstream.md
+--- a/README.upstream.md	1969-12-31 18:00:00.000000000 -0600
++++ b/README.upstream.md	2026-10-15 16:16:08.119756022 -0500
+@@ -0,0 +1,172 @@
++# An MCP-based Chatbot
++
++(English | [中文](README_zh.md) | [日本語](README_ja.md))
++
++## Introduction
++
++👉 [Human: Give AI a camera vs AI: Instantly finds out the owner hasn't washed hair for three days【bilibili】](https://www.bilibili.com/video/BV1bpjgzKEhd/)
++
++👉 [Handcraft your AI girlfriend, beginner's guide【bilibili】](https://www.bilibili.com/video/BV1XnmFYLEJN/)
++
++As a voice interaction entry, the XiaoZhi AI chatbot leverages the AI capabilities of large models like Qwen / DeepSeek, and achieves multi-terminal control via the MCP protocol.
++
++<img src="docs/mcp-based-graph.jpg" alt="Control everything via MCP" width="320">
++
++## Recent Updates
++
++- The project now requires ESP-IDF v6.0.1 or later. [ESP-IDF v6.1](https://github.com/espressif/esp-idf/releases/tag/v6.1) is the recommended SDK. ESP-IDF 5.x is no longer supported. The current matrix contains 171 variants; ESP32-S31 builds require IDF 6.1 or later.
++- MQTT and BluFi cryptographic code has migrated to PSA Crypto. IDF 6 component splits and third-party dependency compatibility have also been addressed.
++- Audio pipeline concurrency, MQTT/UDP packet validation, and release-matrix selection have been hardened.
++- ESP32-P4 Rev1 and Rev3 are both supported on IDF 6 with ESP-SR 2.4.7.
++
++### Features Implemented
++
++- Wi-Fi, wired Ethernet, USB RNDIS, and ML307/EC801E or NT26 Cat.1 4G networking; supported boards can switch between Wi-Fi and 4G
++- Offline voice wake-up with [ESP-SR](https://github.com/espressif/esp-sr), including customizable wake words
++- Two communication transports: [WebSocket](docs/websocket.md) and [MQTT + UDP](docs/mqtt-udp.md)
++- Opus audio streaming with conventional streaming ASR + LLM + TTS pipelines and Realtime end-to-end voice models; AEC-capable hardware supports realtime full-duplex interaction
++- Speaker recognition, identifies the current speaker [3D Speaker](https://github.com/modelscope/3D-Speaker)
++- OLED / LCD displays with emoji and rich expression support, plus camera vision input on supported boards
++- Battery display and power management
++- 39 interface languages, with localized voice prompts where available and English fallback
++- ESP32, ESP32-C3, ESP32-C5, ESP32-C6, ESP32-S3, and ESP32-P4 chip platforms
++- Wi-Fi provisioning through hotspot or BluFi
++- Device-side MCP for device control (Speaker, LED, Servo, GPIO, etc.)
++- Cloud-side MCP to extend large model capabilities (smart home control, PC desktop operation, knowledge search, email, etc.)
++- Customizable wake words, fonts, emojis, and chat backgrounds with online web-based editing ([Custom Assets Generator](https://github.com/78/xiaozhi-assets-generator))
++
++## Hardware
++
++### Breadboard DIY Practice
++
++See the Feishu document tutorial:
++
++👉 ["XiaoZhi AI Chatbot Encyclopedia"](https://ccnphfhqs21z.feishu.cn/wiki/F5krwD16viZoF0kKkvDcrZNYnhb?from=from_copylink)
++
++Breadboard demo:
++
++![Breadboard Demo](docs/v1/wiring2.jpg)
++
++### Supports 138 Board Directories and 171 Release Variants (Partial List)
++
++- <a href="https://oshwhub.com/li-chuang-kai-fa-ban/li-chuang-shi-zhan-pai-esp32-s3-kai-fa-ban" target="_blank" title="LiChuang ESP32-S3 Development Board">LiChuang ESP32-S3 Development Board</a>
++- <a href="https://github.com/espressif/esp-box" target="_blank" title="Espressif ESP32-S3-BOX-3">Espressif ESP32-S3-BOX-3</a>
++- <a href="https://docs.m5stack.com/zh_CN/core/CoreS3" target="_blank" title="M5Stack CoreS3">M5Stack CoreS3</a>
++- <a href="https://docs.m5stack.com/en/atom/Atomic%20Echo%20Base" target="_blank" title="AtomS3R + Echo Base">M5Stack AtomS3R + Echo Base</a>
++- <a href="https://gf.bilibili.com/item/detail/1108782064" target="_blank" title="Magic Button 2.4">Magic Button 2.4</a>
++- <a href="https://www.waveshare.net/shop/ESP32-S3-Touch-AMOLED-1.8.htm" target="_blank" title="Waveshare ESP32-S3-Touch-AMOLED-1.8">Waveshare ESP32-S3-Touch-AMOLED-1.8</a>
++- <a href="https://github.com/Xinyuan-LilyGO/T-Circle-S3" target="_blank" title="LILYGO T-Circle-S3">LILYGO T-Circle-S3</a>
++- <a href="https://oshwhub.com/tenclass01/xmini_c3" target="_blank" title="XiaGe Mini C3">XiaGe Mini C3</a>
++- <a href="https://oshwhub.com/movecall/cuican-ai-pendant-lights-up-y" target="_blank" title="Movecall CuiCan ESP32S3">CuiCan AI Pendant</a>
++- <a href="https://github.com/WMnologo/xingzhi-ai" target="_blank" title="WMnologo-Xingzhi-1.54">WMnologo-Xingzhi-1.54TFT</a>
++- <a href="https://www.seeedstudio.com/SenseCAP-Watcher-W1-A-p-5979.html" target="_blank" title="SenseCAP Watcher">SenseCAP Watcher</a>
++- <a href="https://www.bilibili.com/video/BV1BHJtz6E2S/" target="_blank" title="ESP-HI Low Cost Robot Dog">ESP-HI Low Cost Robot Dog</a>
++
++<div style="display: flex; justify-content: space-between;">
++  <a href="docs/v1/lichuang-s3.jpg" target="_blank" title="LiChuang ESP32-S3 Development Board">
++    <img src="docs/v1/lichuang-s3.jpg" width="240" />
++  </a>
++  <a href="docs/v1/espbox3.jpg" target="_blank" title="Espressif ESP32-S3-BOX3">
++    <img src="docs/v1/espbox3.jpg" width="240" />
++  </a>
++  <a href="docs/v1/m5cores3.jpg" target="_blank" title="M5Stack CoreS3">
++    <img src="docs/v1/m5cores3.jpg" width="240" />
++  </a>
++  <a href="docs/v1/atoms3r.jpg" target="_blank" title="AtomS3R + Echo Base">
++    <img src="docs/v1/atoms3r.jpg" width="240" />
++  </a>
++  <a href="docs/v1/magiclick.jpg" target="_blank" title="Magic Button 2.4">
++    <img src="docs/v1/magiclick.jpg" width="240" />
++  </a>
++  <a href="docs/v1/waveshare.jpg" target="_blank" title="Waveshare ESP32-S3-Touch-AMOLED-1.8">
++    <img src="docs/v1/waveshare.jpg" width="240" />
++  </a>
++  <a href="docs/v1/lilygo-t-circle-s3.jpg" target="_blank" title="LILYGO T-Circle-S3">
++    <img src="docs/v1/lilygo-t-circle-s3.jpg" width="240" />
++  </a>
++  <a href="docs/v1/xmini-c3.jpg" target="_blank" title="XiaGe Mini C3">
++    <img src="docs/v1/xmini-c3.jpg" width="240" />
++  </a>
++  <a href="docs/v1/movecall-cuican-esp32s3.jpg" target="_blank" title="CuiCan">
++    <img src="docs/v1/movecall-cuican-esp32s3.jpg" width="240" />
++  </a>
++  <a href="docs/v1/wmnologo_xingzhi_1.54.jpg" target="_blank" title="WMnologo-Xingzhi-1.54">
++    <img src="docs/v1/wmnologo_xingzhi_1.54.jpg" width="240" />
++  </a>
++  <a href="docs/v1/sensecap_watcher.jpg" target="_blank" title="SenseCAP Watcher">
++    <img src="docs/v1/sensecap_watcher.jpg" width="240" />
++  </a>
++  <a href="docs/v1/esp-hi.jpg" target="_blank" title="ESP-HI Low Cost Robot Dog">
++    <img src="docs/v1/esp-hi.jpg" width="240" />
++  </a>
++</div>
++
++## Software
++
++### Firmware Flashing
++
++For beginners, it is recommended to use the firmware that can be flashed without setting up a development environment.
++
++The firmware connects to the official [xiaozhi.me](https://xiaozhi.me) server by default. Personal users can register an account to use the Qwen real-time model for free.
++
++👉 [Beginner's Firmware Flashing Guide](https://ccnphfhqs21z.feishu.cn/wiki/Zpz4wXBtdimBrLk25WdcXzxcnNS)
++
++### Development Environment
++
++- Cursor or VSCode
++- Install the ESP-IDF plugin. The minimum SDK is [ESP-IDF v6.0.1](https://github.com/espressif/esp-idf/releases/tag/v6.0.1); [ESP-IDF v6.1](https://github.com/espressif/esp-idf/releases/tag/v6.1) is recommended. ESP-IDF 5.x is not supported.
++- Linux is better than Windows for faster compilation and fewer driver issues
++- This project uses Google C++ code style, please ensure compliance when submitting code
++
++### Developer Documentation
++
++- [Custom Board Guide](docs/custom-board.md) - Learn how to create custom boards for XiaoZhi AI
++- [MCP Protocol IoT Control Usage](docs/mcp-usage.md) - Learn how to control IoT devices via MCP protocol
++- [MCP Protocol Interaction Flow](docs/mcp-protocol.md) - Device-side MCP protocol implementation
++- [MQTT + UDP Hybrid Communication Protocol Document](docs/mqtt-udp.md)
++- [A detailed WebSocket communication protocol document](docs/websocket.md)
++
++## Large Model Configuration
++
++If you already have a XiaoZhi AI chatbot device and have connected to the official server, you can log in to the [xiaozhi.me](https://xiaozhi.me) console for configuration.
++
++👉 [Backend Operation Video Tutorial (Old Interface)](https://www.bilibili.com/video/BV1jUCUY2EKM/)
++
++## Related Open Source Projects
++
++For server deployment on personal computers, refer to the following open-source projects:
++
++- [xinnan-tech/xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) Python server
++- [joey-zhou/xiaozhi-esp32-server-java](https://github.com/joey-zhou/xiaozhi-esp32-server-java) Java server
++- [AnimeAIChat/xiaozhi-server-go](https://github.com/AnimeAIChat/xiaozhi-server-go) Golang server
++- [hackers365/xiaozhi-esp32-server-golang](https://github.com/hackers365/xiaozhi-esp32-server-golang) Golang server
++
++Other client projects using the XiaoZhi communication protocol:
++
++- [huangjunsen0406/py-xiaozhi](https://github.com/huangjunsen0406/py-xiaozhi) Python client
++- [TOM88812/xiaozhi-android-client](https://github.com/TOM88812/xiaozhi-android-client) Android client
++- [100askTeam/xiaozhi-linux](http://github.com/100askTeam/xiaozhi-linux) Linux client by 100ask
++- [78/xiaozhi-sf32](https://github.com/78/xiaozhi-sf32) Bluetooth chip firmware by Sichuan
++- [QuecPython/solution-xiaozhiAI](https://github.com/QuecPython/solution-xiaozhiAI) QuecPython firmware by Quectel
++
++Custom Assets Tools:
++
++- [78/xiaozhi-assets-generator](https://github.com/78/xiaozhi-assets-generator) Custom Assets Generator (Wake words, fonts, emojis, backgrounds)
++
++## About the Project
++
++This is an open-source ESP32 project, released under the MIT license, allowing anyone to use it for free, including for commercial purposes.
++
++We hope this project helps everyone understand AI hardware development and apply rapidly evolving large language models to real hardware devices.
++
++If you have any ideas or suggestions, please feel free to raise Issues or join our [Discord](https://discord.gg/C759fGMBcZ) or QQ group: 1095994019
++
++## Star History
++
++<a href="https://star-history.com/#78/xiaozhi-esp32&Date">
++ <picture>
++   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date&theme=dark" />
++   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
++   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
++ </picture>
++</a>
+diff -ruN '--exclude=out' a/build.sh b/build.sh
+--- a/build.sh	1969-12-31 18:00:00.000000000 -0600
++++ b/build.sh	2026-10-15 16:16:08.119756022 -0500
+@@ -0,0 +1,33 @@
++#!/usr/bin/env bash
++# Build the Tamagroki cube firmware (ESP-IDF >= 6.0.1, 6.1 recommended).
++#   ./build.sh                       # uses tamagroki/sdkconfig.tamagroki
++#   TAMAGROKI_RELAY_URL=http://<relay-ip>:8765/xiaozhi/ota/ ./build.sh
++#   TAMAGROKI_COLOR=0xFF8800 TAMAGROKI_NAME=Jarvis TAMAGROKI_WAKE="hey jarvis" ./build.sh
++set -euo pipefail
++cd "$(dirname "$0")"
++if ! command -v idf.py >/dev/null; then
++  for p in "${IDF_PATH:-}" "$HOME/esp/esp-idf" "$HOME/.espressif/esp-idf"; do
++    [ -n "$p" ] && [ -f "$p/export.sh" ] && { . "$p/export.sh" >/dev/null; break; }
++  done
++fi
++command -v idf.py >/dev/null || { echo "ESP-IDF not found: install it (see README) or source export.sh"; exit 1; }
++
++frag=build/tamagroki.local.sdkconfig
++mkdir -p build
++cp tamagroki/sdkconfig.tamagroki "$frag"
++[ -n "${TAMAGROKI_RELAY_URL:-}" ] && echo "CONFIG_OTA_URL=\"$TAMAGROKI_RELAY_URL\"" >> "$frag"
++[ -n "${TAMAGROKI_COLOR:-}" ]     && echo "CONFIG_TAMAGROKI_BG_COLOR=$TAMAGROKI_COLOR" >> "$frag"
++[ -n "${TAMAGROKI_NAME:-}" ]      && echo "CONFIG_TAMAGROKI_NAME=\"$TAMAGROKI_NAME\"" >> "$frag"
++if [ -n "${TAMAGROKI_WAKE:-}" ]; then
++  echo "CONFIG_CUSTOM_WAKE_WORD=\"$(echo "$TAMAGROKI_WAKE" | tr 'A-Z' 'a-z')\"" >> "$frag"
++  echo "CONFIG_CUSTOM_WAKE_WORD_DISPLAY=\"$TAMAGROKI_WAKE\"" >> "$frag"
++fi
++[ -f tamagroki/sdkconfig.local ] && cat tamagroki/sdkconfig.local >> "$frag"   # your private overrides (gitignored)
++
++# regenerate sdkconfig from defaults whenever the preset changed (full rebuild), else incremental
++if ! cmp -s "$frag" build/tamagroki.last.sdkconfig; then rm -f sdkconfig; fi
++cp "$frag" build/tamagroki.last.sdkconfig
++idf.py -DIDF_TARGET=esp32s3 "-DSDKCONFIG_DEFAULTS=sdkconfig.defaults;$frag" \
++       -DBOARD_NAME=esp32-s3-touch-amoled-2.16 build
++idf.py merge-bin
++echo "OK: build/merged-binary.bin ($(du -h build/merged-binary.bin | cut -f1))"
+diff -ruN '--exclude=out' a/flash.sh b/flash.sh
+--- a/flash.sh	1969-12-31 18:00:00.000000000 -0600
++++ b/flash.sh	2026-10-15 16:16:08.119756022 -0500
+@@ -0,0 +1,35 @@
++#!/usr/bin/env bash
++# One-command build + flash for the Tamagroki cube (Waveshare ESP32-S3-Touch-AMOLED-2.16).
++#
++#   ./flash.sh /dev/cu.usbmodem*            # build for this Mac's relay, flash, open monitor
++#   ./flash.sh /dev/cu.usbmodem* --no-build # flash the existing build/merged-binary.bin with esptool
++#   TAMAGROKI_RELAY_URL=http://<relay-ip>:8765/xiaozhi/ota/ ./flash.sh /dev/cu.usbmodem1101
++#   NO_MONITOR=1 ./flash.sh /dev/cu.usbmodem1101
++set -euo pipefail
++cd "$(dirname "$0")"
++PORT="${1:-}"
++[ -z "$PORT" ] && { ls /dev/cu.usbmodem* /dev/ttyACM* 2>/dev/null | head -1 >/dev/null; PORT=$(ls /dev/cu.usbmodem* /dev/ttyACM* 2>/dev/null | head -1 || true); }
++[ -z "$PORT" ] && { echo "usage: $0 /dev/cu.usbmodemXXXX [--no-build]   (plug the cube in over USB-C)"; exit 1; }
++shift || true
++BUILD=1; [ "${1:-}" = "--no-build" ] && BUILD=0
++
++if [ -z "${TAMAGROKI_RELAY_URL:-}" ]; then
++  if command -v scutil >/dev/null; then HOST="$(scutil --get LocalHostName).local"; else HOST="$(hostname).local"; fi
++  export TAMAGROKI_RELAY_URL="http://${HOST}:8765/xiaozhi/ota/"
++fi
++
++if [ "$BUILD" = 1 ]; then
++  echo ">> building with relay OTA URL $TAMAGROKI_RELAY_URL"
++  ./build.sh
++  echo ">> flashing $PORT"
++  idf.py -p "$PORT" -b 921600 flash   # keeps NVS (Wi-Fi credentials)
++  [ -z "${NO_MONITOR:-}" ] && exec idf.py -p "$PORT" monitor
++else
++  BIN=build/merged-binary.bin
++  [ -f "$BIN" ] || { echo "no $BIN; run without --no-build"; exit 1; }
++  ESPTOOL="esptool.py"; command -v esptool.py >/dev/null || ESPTOOL="python3 -m esptool"
++  echo ">> flashing $BIN to $PORT (whole flash image, this also resets saved Wi-Fi)"
++  $ESPTOOL --chip esp32s3 -p "$PORT" -b 921600 --before default-reset --after hard-reset write-flash 0x0 "$BIN"
++  echo "done. The relay URL baked into this binary is in build/tamagroki.local.sdkconfig (CONFIG_OTA_URL);"
++  echo "you can also change it in the Wi-Fi setup page (Advanced -> OTA URL)."
++fi
+diff -ruN '--exclude=out' a/main/CMakeLists.txt b/main/CMakeLists.txt
+--- a/main/CMakeLists.txt	2026-10-14 19:51:46.000000000 -0500
++++ b/main/CMakeLists.txt	2026-10-15 16:16:08.123756022 -0500
+@@ -1,5 +1,6 @@
+ # Define source files
+-set(SOURCES "audio/audio_codec.cc"
++set(SOURCES "tamagroki/tamagroki_audio.cc"
++            "audio/audio_codec.cc"
+             "audio/audio_debugger.cc"
+             "audio/audio_service.cc"
+             "audio/demuxer/ogg_demuxer.cc"
+@@ -43,7 +44,7 @@
+             "main.cc"
+             )
+ 
+-set(INCLUDE_DIRS "." "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/demuxer" "protocols")
++set(INCLUDE_DIRS "." "tamagroki" "display" "display/lvgl_display" "display/lvgl_display/jpg" "audio" "audio/demuxer" "protocols")
+ 
+ # Add board common files
+ list(APPEND SOURCES
+@@ -375,6 +376,7 @@
+     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
+ elseif(CONFIG_BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_AMOLED_2_16)
+     set(BOARD_DIR "waveshare/esp32-s3-touch-amoled-2.16")
++    list(APPEND SOURCES "tamagroki/grok_face.cc" "tamagroki/grok_face_display.cc" "tamagroki/qmi8658_pickup.cc")
+     set(BUILTIN_TEXT_FONT font_noto_sans_basic_30_4)
+     set(BUILTIN_ICON_FONT font_material_symbols_30_4)
+     set(DEFAULT_EMOJI_COLLECTION noto-color-emoji_64)
+diff -ruN '--exclude=out' a/main/Kconfig.projbuild b/main/Kconfig.projbuild
+--- a/main/Kconfig.projbuild	2026-10-14 19:51:46.000000000 -0500
++++ b/main/Kconfig.projbuild	2026-10-15 16:16:08.123756022 -0500
+@@ -1,5 +1,49 @@
+ menu "Xiaozhi Assistant"
+ 
++menu "Tamagroki"
++config TAMAGROKI_FACE
++    bool "Use the full-screen Tamagroki pill-eye face"
++    default y
++    depends on BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_AMOLED_2_16
++    help
++        Replaces the stock xiaozhi chat UI with a solid-colour face and two tilted pill eyes.
++
++config TAMAGROKI_NAME
++    string "Bot name"
++    default "Tamagroki"
++    help
++        Name of the bot (informational; the spoken persona name comes from
++        TAMAGROKI_NAME on the relay). Change CUSTOM_WAKE_WORD (e.g. "yo grok") and
++        CUSTOM_WAKE_WORD_DISPLAY to change the wake phrase.
++
++config TAMAGROKI_BG_COLOR
++    hex "Face background colour (0xRRGGBB)"
++    default 0x9B7FE0
++    depends on TAMAGROKI_FACE
++
++config TAMAGROKI_EYE_TILT_DEG
++    int "Eye tilt in degrees (+ leans the top of the pills to the right)"
++    default 12
++    range -45 45
++    depends on TAMAGROKI_FACE
++
++config TAMAGROKI_SHOW_SUBTITLES
++    bool "Show user/assistant subtitles under the eyes"
++    default n
++    depends on TAMAGROKI_FACE
++
++config TAMAGROKI_IMU_WAKE
++    bool "Pick-up-to-wake using the QMI8658 IMU"
++    default y
++    depends on BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_AMOLED_2_16
++
++config TAMAGROKI_IMU_THRESHOLD_MG
++    int "Pick-up threshold (milli-g deviation from rest)"
++    default 350
++    range 100 2000
++    depends on TAMAGROKI_IMU_WAKE
++endmenu
++
+ config OTA_URL
+     string "Default OTA URL"
+     default "https://api.tenclass.net/xiaozhi/ota/"
+@@ -968,6 +1012,14 @@
+     help
+         Custom Wake Word Threshold, range 1-99, the smaller the more sensitive, default 20
+ 
++config CUSTOM_WAKE_WORD_SW_GAIN
++    int "Custom Wake Word software gain (x) into MultiNet"
++    default 1
++    range 1 16
++    depends on USE_CUSTOM_WAKE_WORD
++    help
++        Linear gain applied (saturating) to AFE output before MultiNet only. 4 = +12 dB.
++
+ config SEND_WAKE_WORD_DATA
+     bool "Send Wake Word Data"
+     default y
+@@ -999,7 +1051,7 @@
+     default n
+         depends on USE_AUDIO_PROCESSOR && (BOARD_TYPE_ESP32_S3_BOX_3 || BOARD_TYPE_ESP32_S3_BOX || BOARD_TYPE_ESP32_S3_BOX_LITE \
+         || BOARD_TYPE_LICHUANG_DEV_S3 || BOARD_TYPE_RYMCU_BIGSMART || BOARD_TYPE_ESP32_S3_KORVO_2_V3 || BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_AMOLED_1_75|| BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_AMOLED_1_75C || BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_1_83\
+-        || BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_AMOLED_2_06 || BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_4B || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_4B || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_4_3 || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_5 \
++        || BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_AMOLED_2_06 || BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_AMOLED_2_16 || BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_LCD_4B || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_4B || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_4_3 || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_5 \
+         || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_7B || BOARD_TYPE_CHD_ESP32S3_BOX \
+         || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_3_4C || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_4C || BOARD_TYPE_ESP32_S3_LCD_EV_BOARD_2 || BOARD_TYPE_YUNLIAO_S3 \
+         || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_7 || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_8 || BOARD_TYPE_WAVESHARE_ESP32_P4_WIFI6_TOUCH_LCD_10_1 \
+diff -ruN '--exclude=out' a/main/audio/audio_service.cc b/main/audio/audio_service.cc
+--- a/main/audio/audio_service.cc	2026-10-14 19:51:46.000000000 -0500
++++ b/main/audio/audio_service.cc	2026-10-15 16:16:08.139756022 -0500
+@@ -1,3 +1,4 @@
++#include "tamagroki/tamagroki.h"
+ #include "audio_service.h"
+ #include <esp_log.h>
+ #include <cstring>
+@@ -348,6 +349,7 @@
+             callbacks_.on_playback_progress(task.playback_id, task.media_position_ms);
+         }
+ 
++        tamagroki::ReportPlaybackPcm(task.pcm.data(), task.pcm.size());
+         codec_->OutputData(task.pcm);
+ 
+         /* Update the last output time */
+diff -ruN '--exclude=out' a/main/audio/engines/afe_audio_engine.cc b/main/audio/engines/afe_audio_engine.cc
+--- a/main/audio/engines/afe_audio_engine.cc	2026-10-14 19:51:46.000000000 -0500
++++ b/main/audio/engines/afe_audio_engine.cc	2026-10-15 16:16:08.139756022 -0500
+@@ -387,8 +387,11 @@
+         }
+     }
+     if (codec_->input_reference()) {
+-        const bool enable_aec = (bits & kWakeWordEnabled) ||
+-                                (device_aec_enabled_.load() && (bits & kVoiceProcessingEnabled));
++        // AEC only while a conversation is open (something may be playing). In idle
++        // (wake word only, nothing playing) the very aggressive NLP just eats the
++        // user's speech and starves MultiNet, so run the wake path without it.
++        const bool enable_aec = (bits & kVoiceProcessingEnabled) &&
++                                (device_aec_enabled_.load() || (bits & kWakeWordEnabled));
+         if (enable_aec) {
+             afe_iface_->enable_aec(afe_data_);
+         } else {
+@@ -405,6 +408,7 @@
+     // serializes the reset against Feed(); fetch/reset both run in this task.
+     std::lock_guard<std::mutex> lock(input_buffer_mutex_);
+     input_buffer_.clear();
++    wake_vad_speech_ = false;
+     afe_iface_->reset_buffer(afe_data_);
+ }
+ 
+@@ -448,6 +452,14 @@
+ 
+ void AfeAudioEngine::HandleWakeWordResult(const afe_fetch_result_t* result) {
+     if (wake_detector_ == WakeDetector::kMultiNet) {
++        // Align MultiNet's fixed detection window to speech: on VAD onset, restart
++        // it (with the VAD pre-roll) instead of letting the phrase straddle windows.
++        const bool speech = result->vad_state == VAD_SPEECH;
++        if (speech && !wake_vad_speech_) {
++            const int16_t* cache = result->vad_cache_size > 0 ? result->vad_cache : nullptr;
++            custom_wake_word_->OnSpeechStart(cache, result->vad_cache_size / sizeof(int16_t));
++        }
++        wake_vad_speech_ = speech;
+         custom_wake_word_->FeedMono(result->data, result->data_size / sizeof(int16_t));
+         return;
+     }
+diff -ruN '--exclude=out' a/main/audio/engines/afe_audio_engine.h b/main/audio/engines/afe_audio_engine.h
+--- a/main/audio/engines/afe_audio_engine.h	2026-10-14 19:51:46.000000000 -0500
++++ b/main/audio/engines/afe_audio_engine.h	2026-10-15 16:16:08.139756022 -0500
+@@ -70,6 +70,7 @@
+     StackType_t* processing_task_stack_ = nullptr;
+     int frame_samples_ = 0;
+     bool is_speaking_ = false;
++    bool wake_vad_speech_ = false;  // VAD state seen by the MultiNet wake path
+     std::atomic<bool> device_aec_enabled_{false};
+     // Deferred AFE buffer reset, performed by ProcessingTask (see UpdateActiveState)
+     std::atomic<bool> reset_pending_{false};
+diff -ruN '--exclude=out' a/main/audio/wake_words/custom_wake_word.cc b/main/audio/wake_words/custom_wake_word.cc
+--- a/main/audio/wake_words/custom_wake_word.cc	2026-10-14 19:51:46.000000000 -0500
++++ b/main/audio/wake_words/custom_wake_word.cc	2026-10-15 16:16:08.139756022 -0500
+@@ -92,7 +92,20 @@
+         owns_models_ = models_ != nullptr;
+ #ifdef CONFIG_CUSTOM_WAKE_WORD
+         threshold_ = CONFIG_CUSTOM_WAKE_WORD_THRESHOLD / 100.0f;
+-        commands_.push_back({CONFIG_CUSTOM_WAKE_WORD, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
++        {
++            // Allow several ';'-separated phrases, all mapped to wake
++            std::string all = CONFIG_CUSTOM_WAKE_WORD;
++            size_t start = 0;
++            while (start <= all.size()) {
++                size_t end = all.find(';', start);
++                if (end == std::string::npos) end = all.size();
++                std::string phrase = all.substr(start, end - start);
++                while (!phrase.empty() && phrase.front() == ' ') phrase.erase(0, 1);
++                while (!phrase.empty() && phrase.back() == ' ') phrase.pop_back();
++                if (!phrase.empty()) commands_.push_back({phrase, CONFIG_CUSTOM_WAKE_WORD_DISPLAY, "wake"});
++                start = end + 1;
++            }
++        }
+ #endif
+     } else {
+         models_ = models_list;
+@@ -119,6 +132,8 @@
+     multinet_ = esp_mn_handle_from_name(mn_name_);
+     multinet_model_data_ = multinet_->create(mn_name_, duration_);
+     multinet_->set_det_threshold(multinet_model_data_, threshold_);
++    ESP_LOGI(TAG, "MultiNet %s threshold=%.2f duration=%d ms, %d phrase(s), sw gain x%d",
++             mn_name_, threshold_, duration_, (int)commands_.size(), CONFIG_CUSTOM_WAKE_WORD_SW_GAIN);
+     input_buffer_.reserve(multinet_->get_samp_chunksize(multinet_model_data_));
+     esp_mn_commands_clear();
+     for (int i = 0; i < commands_.size(); i++) {
+@@ -167,6 +182,23 @@
+     FeedSamples(data.data(), data.size(), false);
+ }
+ 
++void CustomWakeWord::OnSpeechStart(const int16_t* preroll, size_t samples) {
++    if (multinet_model_data_ == nullptr) {
++        return;
++    }
++    {
++        std::lock_guard<std::mutex> lock(input_buffer_mutex_);
++        if (!running_) {
++            return;
++        }
++        multinet_->clean(multinet_model_data_);
++        input_buffer_.clear();
++    }
++    if (preroll != nullptr && samples > 0) {
++        FeedSamples(preroll, samples, true);
++    }
++}
++
+ void CustomWakeWord::FeedMono(const int16_t* data, size_t samples) {
+     FeedSamples(data, samples, true);
+ }
+@@ -190,6 +222,17 @@
+     } else {
+         input_buffer_.insert(input_buffer_.end(), data, data + samples);
+     }
++
++#if CONFIG_CUSTOM_WAKE_WORD_SW_GAIN > 1
++    // Software gain for the MultiNet path only (after AFE/AEC); saturating
++    {
++        size_t added = mono || codec_->input_channels() <= 1 ? samples : samples / codec_->input_channels();
++        for (size_t i = input_buffer_.size() - added; i < input_buffer_.size(); i++) {
++            int32_t v = (int32_t)input_buffer_[i] * CONFIG_CUSTOM_WAKE_WORD_SW_GAIN;
++            input_buffer_[i] = v > 32767 ? 32767 : (v < -32768 ? -32768 : (int16_t)v);
++        }
++    }
++#endif
+     
+     int chunksize = multinet_->get_samp_chunksize(multinet_model_data_);
+     while (input_buffer_.size() >= chunksize) {
+diff -ruN '--exclude=out' a/main/audio/wake_words/custom_wake_word.h b/main/audio/wake_words/custom_wake_word.h
+--- a/main/audio/wake_words/custom_wake_word.h	2026-10-14 19:51:46.000000000 -0500
++++ b/main/audio/wake_words/custom_wake_word.h	2026-10-15 16:16:08.139756022 -0500
+@@ -28,6 +28,9 @@
+     bool Initialize(AudioCodec* codec, srmodel_list_t* models_list);
+     void Feed(const std::vector<int16_t>& data);
+     void FeedMono(const int16_t* data, size_t samples);
++    // VAD speech onset: restart the MultiNet window so the utterance starts a fresh
++    // detection, then feed the VAD pre-roll cache (the audio before onset was flagged).
++    void OnSpeechStart(const int16_t* preroll, size_t samples);
+     void OnWakeWordDetected(std::function<void(const std::string& wake_word)> callback);
+     void Start();
+     void Stop();
+diff -ruN '--exclude=out' a/main/boards/waveshare/esp32-s3-touch-amoled-2.16/esp32-s3-touch-amoled-2.16.cc b/main/boards/waveshare/esp32-s3-touch-amoled-2.16/esp32-s3-touch-amoled-2.16.cc
+--- a/main/boards/waveshare/esp32-s3-touch-amoled-2.16/esp32-s3-touch-amoled-2.16.cc	2026-10-14 19:51:46.000000000 -0500
++++ b/main/boards/waveshare/esp32-s3-touch-amoled-2.16/esp32-s3-touch-amoled-2.16.cc	2026-10-15 16:16:08.151756022 -0500
+@@ -23,6 +23,16 @@
+ #include <esp_lvgl_port.h>
+ #include <lvgl.h>
+ 
++#if CONFIG_TAMAGROKI_FACE
++#include "tamagroki/grok_face_display.h"
++#define TAMAGROKI_DISPLAY_BASE GrokFaceDisplay
++#else
++#define TAMAGROKI_DISPLAY_BASE SpiLcdDisplay
++#endif
++#if CONFIG_TAMAGROKI_IMU_WAKE
++#include "tamagroki/qmi8658_pickup.h"
++#endif
++
+ #define TAG "WaveshareEsp32s3TouchAMOLED2inch16"
+ 
+ class Pmic : public Axp2101 {
+@@ -79,7 +89,7 @@
+ };
+ 
+ // 在waveshare_amoled_1_75类之前添加新的显示类
+-class CustomLcdDisplay : public SpiLcdDisplay {
++class CustomLcdDisplay : public TAMAGROKI_DISPLAY_BASE {
+ public:
+     static void rounder_event_cb(lv_event_t* e) {
+         lv_area_t* area = (lv_area_t* )lv_event_get_param(e);
+@@ -106,7 +116,7 @@
+                      bool mirror_x,
+                      bool mirror_y,
+                      bool swap_xy)
+-        : SpiLcdDisplay(io_handle, panel_handle,
++        : TAMAGROKI_DISPLAY_BASE(io_handle, panel_handle,
+                         width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy) {
+         // Note: UI customization should be done in SetupUI(), not in constructor
+         // to ensure lvgl objects are created before accessing them
+@@ -114,7 +124,7 @@
+ 
+     virtual void SetupUI() override {
+         // Call parent SetupUI() first to create all lvgl objects
+-        SpiLcdDisplay::SetupUI();
++        TAMAGROKI_DISPLAY_BASE::SetupUI();
+ 
+         DisplayLockGuard lock(this);
+         lv_obj_set_style_pad_left(status_bar_, LV_HOR_RES*  0.1, 0);
+@@ -299,6 +309,34 @@
+     }
+ 
+     // 初始化工具
++#if CONFIG_TAMAGROKI_IMU_WAKE
++    Qmi8658Pickup* imu_ = nullptr;
++    void InitializeImu() {
++        uint8_t addr = 0;
++        for (uint8_t a : {0x6B, 0x6A}) {
++            if (i2c_master_probe(i2c_bus_, a, 100) == ESP_OK) { addr = a; break; }
++        }
++        if (addr == 0) {
++            ESP_LOGW(TAG, "QMI8658 IMU not found on I2C, pick-up-to-wake disabled");
++            return;
++        }
++        imu_ = new Qmi8658Pickup(i2c_bus_, addr);
++        imu_->Start([this]() {
++            auto& app = Application::GetInstance();
++            app.Schedule([this, &app]() {
++                power_save_timer_->WakeUp();
++#if CONFIG_TAMAGROKI_FACE
++                display_->Nudge();
++#endif
++                if (app.GetDeviceState() == kDeviceStateIdle) {
++                    ESP_LOGI(TAG, "Picked up -> start conversation");
++                    app.ToggleChatState();
++                }
++            });
++        }, CONFIG_TAMAGROKI_IMU_THRESHOLD_MG);
++    }
++#endif
++
+     void InitializeTools() {
+         auto &mcp_server = McpServer::GetInstance();
+         mcp_server.AddTool("self.system.reconfigure_wifi",
+@@ -323,6 +361,9 @@
+         InitializeTouch();
+         InitializeButtons();
+         InitializeTools();
++#if CONFIG_TAMAGROKI_IMU_WAKE
++        InitializeImu();
++#endif
+     }
+ 
+     virtual AudioCodec* GetAudioCodec() override {
+@@ -338,7 +379,8 @@
+             AUDIO_CODEC_PA_PIN, 
+             AUDIO_CODEC_ES8311_ADDR, 
+             AUDIO_CODEC_ES7210_ADDR, 
+-            AUDIO_INPUT_REFERENCE);
++            AUDIO_INPUT_REFERENCE,
++            37.5f);  // ES7210 mic PGA: default 30 dB -> 37.5 dB max (mic was very quiet)
+         return &audio_codec;
+     }
+ 
+diff -ruN '--exclude=out' a/main/tamagroki/grok_face.cc b/main/tamagroki/grok_face.cc
+--- a/main/tamagroki/grok_face.cc	1969-12-31 18:00:00.000000000 -0600
++++ b/main/tamagroki/grok_face.cc	2026-10-15 16:16:08.155756022 -0500
+@@ -0,0 +1,220 @@
++#include "grok_face.h"
++#include <math.h>
++#include <stdio.h>
++#include <string.h>
++
++static inline float lerp(float a, float b, float t) { return a + (b - a) * t; }
++static inline float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
++// exponential smoothing that is frame-rate independent
++static inline float approach(float cur, float target, float rate_per_s, float dt) {
++    float k = 1.0f - expf(-rate_per_s * dt);
++    return cur + (target - cur) * k;
++}
++
++const char* FaceStateName(FaceState s) {
++    switch (s) {
++        case FaceState::kIdle: return "idle";
++        case FaceState::kListening: return "listening";
++        case FaceState::kThinking: return "thinking";
++        case FaceState::kSpeaking: return "speaking";
++        case FaceState::kSleep: return "sleep";
++        case FaceState::kBusy: return "busy";
++    }
++    return "?";
++}
++
++float GrokFace::Rand01() {
++    rng_ = rng_ * 1664525u + 1013904223u;
++    return (rng_ >> 8) / 16777216.0f;
++}
++
++void GrokFace::Create(lv_obj_t* parent, int width, int height, const FaceConfig& cfg) {
++    cfg_ = cfg;
++    w_ = width;
++    h_ = height;
++    root_ = lv_obj_create(parent);
++    lv_obj_remove_style_all(root_);
++    lv_obj_set_size(root_, width, height);
++    lv_obj_set_pos(root_, 0, 0);
++    lv_obj_set_style_bg_opa(root_, LV_OPA_COVER, 0);
++    lv_obj_set_style_bg_color(root_, lv_color_hex(cfg_.bg_color), 0);
++    lv_obj_remove_flag(root_, LV_OBJ_FLAG_SCROLLABLE);
++    lv_obj_remove_flag(root_, LV_OBJ_FLAG_CLICKABLE);
++
++    for (int i = 0; i < 2; i++) {
++        eyes_[i] = lv_line_create(root_);
++        lv_obj_remove_flag(eyes_[i], LV_OBJ_FLAG_CLICKABLE);
++        lv_obj_set_style_line_color(eyes_[i], lv_color_hex(cfg_.eye_color), 0);
++        lv_obj_set_style_line_rounded(eyes_[i], true, 0);
++        lv_obj_set_style_line_width(eyes_[i], cfg_.eye_width, 0);
++        lv_obj_set_pos(eyes_[i], 0, 0);
++        lv_obj_set_size(eyes_[i], width, height);
++    }
++
++    zzz_ = lv_label_create(root_);
++    lv_label_set_text(zzz_, "z z z");
++    lv_obj_set_style_text_color(zzz_, lv_color_hex(cfg_.eye_color), 0);
++    lv_obj_set_style_text_opa(zzz_, LV_OPA_70, 0);
++#if LV_FONT_MONTSERRAT_24
++    lv_obj_set_style_text_font(zzz_, &lv_font_montserrat_24, 0);
++#endif
++    lv_obj_add_flag(zzz_, LV_OBJ_FLAG_HIDDEN);
++
++    caption_ = lv_label_create(root_);
++    lv_obj_set_width(caption_, width * 70 / 100);
++    lv_label_set_long_mode(caption_, LV_LABEL_LONG_WRAP);
++    lv_obj_set_style_text_align(caption_, LV_TEXT_ALIGN_CENTER, 0);
++    lv_obj_set_style_text_color(caption_, lv_color_hex(0x1A1033), 0);
++#if LV_FONT_MONTSERRAT_24
++    lv_obj_set_style_text_font(caption_, &lv_font_montserrat_24, 0);
++#endif
++    lv_obj_align(caption_, LV_ALIGN_BOTTOM_MID, 0, -height / 12);
++    lv_obj_add_flag(caption_, LV_OBJ_FLAG_HIDDEN);
++
++    Tick(0);
++}
++
++void GrokFace::SetBackground(uint32_t rgb) {
++    cfg_.bg_color = rgb;
++    if (root_) lv_obj_set_style_bg_color(root_, lv_color_hex(rgb), 0);
++}
++
++void GrokFace::SetCaption(const char* text) {
++    if (!caption_) return;
++    if (text == nullptr || text[0] == '\0') {
++        lv_obj_add_flag(caption_, LV_OBJ_FLAG_HIDDEN);
++    } else {
++        lv_label_set_text(caption_, text);
++        lv_obj_remove_flag(caption_, LV_OBJ_FLAG_HIDDEN);
++    }
++}
++
++void GrokFace::SetState(FaceState s, uint32_t now_ms) {
++    if (s == state_) return;
++    state_ = s;
++    state_since_ = now_ms;
++    if (s == FaceState::kListening) {
++        // a quick "oh!" blink when we start listening
++        blink_start_ = now_ms;
++        double_blink_ = false;
++    }
++}
++
++void GrokFace::ApplyEye(int idx, const EyePose& p) {
++    float base_x = w_ / 2.0f + (idx == 0 ? -1 : 1) * cfg_.eye_spacing / 2.0f;
++    float base_y = h_ / 2.0f + cfg_.center_y_offset;
++    float cx = base_x + p.dx, cy = base_y + p.dy;
++    float a = p.angle * (float)M_PI / 180.0f;
++    // direction of the pill's long axis (vertical rotated by angle, top leans right for +)
++    float ux = sinf(a), uy = -cosf(a);
++    float hl = p.length / 2.0f;
++    pts_[idx][0].x = (lv_value_precise_t)(cx + ux * hl);
++    pts_[idx][0].y = (lv_value_precise_t)(cy + uy * hl);
++    pts_[idx][1].x = (lv_value_precise_t)(cx - ux * hl);
++    pts_[idx][1].y = (lv_value_precise_t)(cy - uy * hl);
++    lv_line_set_points(eyes_[idx], pts_[idx], 2);
++    lv_obj_set_style_line_width(eyes_[idx], (int32_t)(p.width + 0.5f), 0);
++}
++
++void GrokFace::Tick(uint32_t now) {
++    float dt = (now - last_tick_) / 1000.0f;
++    if (dt < 0 || dt > 0.5f) dt = 0.033f;
++    last_tick_ = now;
++    float t = now / 1000.0f;
++    float since = (now - state_since_) / 1000.0f;
++
++    bool sleeping = state_ == FaceState::kSleep;
++    bool thinking = state_ == FaceState::kThinking || state_ == FaceState::kBusy;
++    sleep_ = approach(sleep_, sleeping ? 1.f : 0.f, sleeping ? 2.5f : 8.f, dt);
++    perk_ = approach(perk_, state_ == FaceState::kListening ? 1.f : 0.f, 10.f, dt);
++    think_ = approach(think_, thinking ? 1.f : 0.f, 6.f, dt);
++    float lvl_target = state_ == FaceState::kSpeaking ? audio_level_target_ : 0.f;
++    audio_level_ = approach(audio_level_, lvl_target, lvl_target > audio_level_ ? 30.f : 12.f, dt);
++
++    // ---- blink scheduling (idle, listening, speaking) ----
++    if (!sleeping && !thinking && now >= next_blink_) {
++        blink_start_ = now;
++        double_blink_ = Rand01() < 0.2f;
++        next_blink_ = now + 2500 + (uint32_t)(Rand01() * 4000);
++    }
++    float blink = 0;  // 0 open .. 1 closed
++    {
++        float bt = (now - blink_start_) / 1000.0f;
++        const float dur = 0.16f;
++        if (bt >= 0 && bt < dur) blink = sinf(bt / dur * (float)M_PI);
++        else if (double_blink_ && bt >= dur + 0.08f && bt < 2 * dur + 0.08f)
++            blink = sinf((bt - dur - 0.08f) / dur * (float)M_PI);
++    }
++
++    // ---- glances (idle only) ----
++    if (state_ == FaceState::kIdle && now >= next_glance_) {
++        float r = Rand01();
++        if (r < 0.35f) { glance_target_x_ = 0; glance_target_y_ = 0; }
++        else {
++            glance_target_x_ = (Rand01() * 2 - 1) * 40.f;
++            glance_target_y_ = (Rand01() * 2 - 1) * 18.f;
++        }
++        next_glance_ = now + 1800 + (uint32_t)(Rand01() * 3500);
++    } else if (state_ != FaceState::kIdle) {
++        glance_target_x_ = 0; glance_target_y_ = 0;
++    }
++    glance_x_ = approach(glance_x_, glance_target_x_, 9.f, dt);
++    glance_y_ = approach(glance_y_, glance_target_y_, 9.f, dt);
++
++    for (int i = 0; i < 2; i++) {
++        float side = i == 0 ? -1.f : 1.f;
++        EyePose p;
++        p.dx = glance_x_;
++        p.dy = glance_y_ + sinf(t * 1.6f) * 3.f;  // breathing
++        p.length = (float)cfg_.eye_length;
++        p.width = (float)cfg_.eye_width;
++        p.angle = cfg_.tilt_deg;
++
++        // listening: perk up - taller, a bit higher, slightly wider apart, pulse
++        p.length += perk_ * (28.f + 6.f * sinf(t * 5.f));
++        p.dy -= perk_ * 14.f;
++        p.dx += perk_ * side * 6.f;
++        p.width += perk_ * 6.f;
++
++        // thinking: look up-right, eyes alternately squish, gentle sway
++        {
++            float phase = t * 3.2f + (i == 0 ? 0.f : 1.7f);
++            p.dx += think_ * (28.f + 8.f * sinf(t * 1.3f));
++            p.dy += think_ * (-26.f);
++            p.length += think_ * (-30.f + 22.f * sinf(phase));
++            p.angle += think_ * 6.f * sinf(t * 1.3f);
++        }
++
++        // speaking: bounce with level
++        {
++            float bounce = audio_level_;
++            p.dy -= bounce * 22.f;
++            p.length += bounce * 36.f - 10.f * (state_ == FaceState::kSpeaking ? 1.f : 0.f) * (1 - bounce);
++            p.width += bounce * 6.f;
++        }
++
++        // blink: squash to a flat, almost horizontal bar
++        float closed = blink > sleep_ ? blink : sleep_;
++        if (closed > 0.001f) {
++            p.length = lerp(p.length, 46.f, closed);
++            p.width = lerp(p.width, 16.f, closed);
++            p.angle = lerp(p.angle, 90.f - side * 4.f, closed);
++            p.dy += closed * 22.f;
++        }
++        // sleep: slow droop
++        p.dy += sleep_ * (12.f + 5.f * sinf(t * 0.9f));
++
++        ApplyEye(i, p);
++    }
++
++    // sleeping "z z z" drifting up
++    if (sleep_ > 0.6f) {
++        float zt = fmodf(t, 3.0f) / 3.0f;
++        lv_obj_remove_flag(zzz_, LV_OBJ_FLAG_HIDDEN);
++        lv_obj_set_pos(zzz_, w_ / 2 + cfg_.eye_spacing / 2 + 30 + (int)(zt * 20), h_ / 2 - 70 - (int)(zt * 60));
++        lv_obj_set_style_opa(zzz_, (lv_opa_t)(255 * (1 - zt) * clampf((sleep_ - 0.6f) * 2.5f, 0, 1)), 0);
++    } else {
++        lv_obj_add_flag(zzz_, LV_OBJ_FLAG_HIDDEN);
++    }
++    (void)since;
++}
+diff -ruN '--exclude=out' a/main/tamagroki/grok_face.h b/main/tamagroki/grok_face.h
+--- a/main/tamagroki/grok_face.h	1969-12-31 18:00:00.000000000 -0600
++++ b/main/tamagroki/grok_face.h	2026-10-15 16:16:08.159756022 -0500
+@@ -0,0 +1,80 @@
++// Tamagroki cube face: purple background + two black tilted pill eyes.
++// Pure LVGL v9 code (no ESP-IDF deps) so the same file runs in the desktop
++// simulator (sim/face) and on the ESP32-S3.
++#pragma once
++#include <lvgl.h>
++#include <stdint.h>
++
++enum class FaceState : uint8_t {
++    kIdle = 0,
++    kListening,
++    kThinking,
++    kSpeaking,
++    kSleep,
++    kBusy,  // connecting / starting / activating (rendered like a slow "thinking")
++};
++
++const char* FaceStateName(FaceState s);
++
++struct FaceConfig {
++    uint32_t bg_color = 0x9B7FE0;   // solid background (RGB888)
++    uint32_t eye_color = 0x000000;  // pill eyes
++    float tilt_deg = 12.0f;         // lean of the pills from vertical (+ = top leans right)
++    int eye_spacing = 150;          // distance between eye centres (px @480)
++    int eye_length = 110;           // distance between the pill's cap centres
++    int eye_width = 84;             // pill thickness
++    int center_y_offset = -10;      // eyes slightly above centre
++};
++
++class GrokFace {
++public:
++    // Creates the face as a full-size child of `parent` (screen or lv_layer_top()).
++    void Create(lv_obj_t* parent, int width, int height, const FaceConfig& cfg);
++    void SetState(FaceState s, uint32_t now_ms);
++    FaceState state() const { return state_; }
++    // 0..1 loudness of the audio currently being played (speaking bounce).
++    void SetAudioLevel(float level) { audio_level_target_ = level < 0 ? 0 : (level > 1 ? 1 : level); }
++    // Small caption at the bottom (wifi setup, errors, optional subtitles). "" hides it.
++    void SetCaption(const char* text);
++    void SetBackground(uint32_t rgb);
++    // Advance the animation to absolute time now_ms. Call at ~30 Hz.
++    void Tick(uint32_t now_ms);
++    lv_obj_t* root() const { return root_; }
++
++private:
++    struct EyePose {
++        float dx, dy;    // offset from rest centre
++        float length;    // cap-centre distance
++        float width;     // thickness
++        float angle;     // degrees from vertical
++    };
++    void ApplyEye(int idx, const EyePose& p);
++    float Rand01();
++
++    FaceConfig cfg_;
++    lv_obj_t* root_ = nullptr;
++    lv_obj_t* eyes_[2] = {nullptr, nullptr};
++    lv_point_precise_t pts_[2][2];
++    lv_obj_t* caption_ = nullptr;
++    lv_obj_t* zzz_ = nullptr;
++    int w_ = 480, h_ = 480;
++
++    FaceState state_ = FaceState::kIdle;
++    uint32_t state_since_ = 0;
++    uint32_t last_tick_ = 0;
++    uint32_t rng_ = 0x1234567u;
++
++    // idle behaviour
++    uint32_t next_blink_ = 2500;
++    uint32_t blink_start_ = 0;
++    bool double_blink_ = false;
++    uint32_t next_glance_ = 4000;
++    float glance_target_x_ = 0, glance_target_y_ = 0;
++    float glance_x_ = 0, glance_y_ = 0;
++
++    // smoothed values
++    float audio_level_target_ = 0, audio_level_ = 0;
++    float perk_ = 0;   // 0..1 listening perk
++    float sleep_ = 0;  // 0..1 eyes closed for sleep
++    float think_ = 0;  // 0..1 thinking pose
++};
+diff -ruN '--exclude=out' a/main/tamagroki/grok_face_display.cc b/main/tamagroki/grok_face_display.cc
+--- a/main/tamagroki/grok_face_display.cc	1969-12-31 18:00:00.000000000 -0600
++++ b/main/tamagroki/grok_face_display.cc	2026-10-15 16:16:08.155756022 -0500
+@@ -0,0 +1,134 @@
++#include "grok_face_display.h"
++#include "tamagroki.h"
++#include "application.h"
++#include "device_state.h"
++
++#include <esp_log.h>
++#include <string.h>
++
++#define TAG "GrokFace"
++
++#ifndef CONFIG_TAMAGROKI_BG_COLOR
++#define CONFIG_TAMAGROKI_BG_COLOR 0x9B7FE0
++#endif
++#ifndef CONFIG_TAMAGROKI_EYE_TILT_DEG
++#define CONFIG_TAMAGROKI_EYE_TILT_DEG 12
++#endif
++
++GrokFaceDisplay::~GrokFaceDisplay() {
++    if (timer_) lv_timer_delete(timer_);
++}
++
++void GrokFaceDisplay::SetupUI() {
++    // Let the stock UI build its objects (other code paths touch them),
++    // then cover everything with the face on the top layer.
++    SpiLcdDisplay::SetupUI();
++    DisplayLockGuard lock(this);
++    FaceConfig cfg;
++    cfg.bg_color = CONFIG_TAMAGROKI_BG_COLOR;
++    cfg.tilt_deg = (float)CONFIG_TAMAGROKI_EYE_TILT_DEG;
++    int scale_w = width_;
++    cfg.eye_spacing = cfg.eye_spacing * scale_w / 480;
++    cfg.eye_length = cfg.eye_length * scale_w / 480;
++    cfg.eye_width = cfg.eye_width * scale_w / 480;
++    face_.Create(lv_layer_top(), width_, height_, cfg);
++    lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(CONFIG_TAMAGROKI_BG_COLOR), 0);
++    timer_ = lv_timer_create(TimerCb, 33, this);
++    ESP_LOGI(TAG, "Tamagroki face ready (bg #%06X, tilt %d)", (unsigned)CONFIG_TAMAGROKI_BG_COLOR,
++             CONFIG_TAMAGROKI_EYE_TILT_DEG);
++}
++
++void GrokFaceDisplay::TimerCb(lv_timer_t* t) {
++    static_cast<GrokFaceDisplay*>(lv_timer_get_user_data(t))->OnTick();
++}
++
++void GrokFaceDisplay::OnTick() {
++    // Runs inside the LVGL task with the LVGL lock held.
++    uint32_t now = lv_tick_get();
++    int ds = (int)Application::GetInstance().GetDeviceState();
++    if (ds != last_device_state_) {
++        thinking_hint_ = false;
++        last_device_state_ = ds;
++    }
++    FaceState fs;
++    switch ((DeviceState)ds) {
++        case kDeviceStateListening: fs = thinking_hint_ ? FaceState::kThinking : FaceState::kListening; break;
++        case kDeviceStateSpeaking: fs = FaceState::kSpeaking; break;
++        case kDeviceStateConnecting:
++        case kDeviceStateStarting:
++        case kDeviceStateActivating:
++        case kDeviceStateUpgrading: fs = FaceState::kBusy; break;
++        // Idle = no conversation open (wake word armed, not streaming the mic):
++        // always show the sleeping face, so awake eyes reliably mean "listening".
++        // The channel-closed path (relay close, idle close, network drop, BOOT stop)
++        // always lands in idle, so this does not depend on the relay.
++        case kDeviceStateIdle: fs = FaceState::kSleep; break;
++        default: fs = power_save_ ? FaceState::kSleep : FaceState::kIdle; break;
++    }
++    face_.SetState(fs, now);
++    float lvl = tamagroki::g_playback_level.load(std::memory_order_relaxed);
++    face_.SetAudioLevel(lvl);
++    // decay so the bounce settles when playback pauses (the audio task refreshes it per frame)
++    tamagroki::g_playback_level.store(lvl * 0.8f, std::memory_order_relaxed);
++    if (notification_until_ && (int32_t)(now - notification_until_) > 0) {
++        notification_until_ = 0;
++        face_.SetCaption(system_caption_.c_str());
++    }
++    face_.Tick(now);
++}
++
++void GrokFaceDisplay::SetEmotion(const char* emotion) {
++    if (emotion == nullptr) return;
++    DisplayLockGuard lock(this);
++    // The relay sends {"type":"llm","emotion":"thinking"} while the model works.
++    if (strcmp(emotion, "thinking") == 0) thinking_hint_ = true;
++    else if (strcmp(emotion, "neutral") == 0 || strcmp(emotion, "listening") == 0) thinking_hint_ = false;
++    else if (strcmp(emotion, "sleepy") == 0) power_save_ = true;
++}
++
++void GrokFaceDisplay::SetChatMessage(const char* role, const char* content) {
++    if (role == nullptr) return;
++    DisplayLockGuard lock(this);
++    if (strcmp(role, "system") == 0) {
++        // Wi-Fi provisioning instructions, activation codes, errors: always show.
++        system_caption_ = content ? content : "";
++        if (!notification_until_) face_.SetCaption(system_caption_.c_str());
++        return;
++    }
++#if CONFIG_TAMAGROKI_SHOW_SUBTITLES
++    face_.SetCaption(content ? content : "");
++#endif
++}
++
++void GrokFaceDisplay::ClearChatMessages() {
++    DisplayLockGuard lock(this);
++    system_caption_.clear();
++    face_.SetCaption("");
++}
++
++void GrokFaceDisplay::SetStatus(const char* status) {
++    // Status text (standby/listening/...) is expressed by the eyes instead.
++    (void)status;
++}
++
++void GrokFaceDisplay::ShowNotification(const char* notification, int duration_ms) {
++    if (notification == nullptr) return;
++    DisplayLockGuard lock(this);
++    face_.SetCaption(notification);
++    notification_until_ = lv_tick_get() + (uint32_t)duration_ms;
++    if (notification_until_ == 0) notification_until_ = 1;
++}
++
++void GrokFaceDisplay::ShowNotification(const std::string& notification, int duration_ms) {
++    ShowNotification(notification.c_str(), duration_ms);
++}
++
++void GrokFaceDisplay::SetPowerSaveMode(bool on) {
++    DisplayLockGuard lock(this);
++    power_save_ = on;
++}
++
++void GrokFaceDisplay::Nudge() {
++    DisplayLockGuard lock(this);
++    power_save_ = false;
++}
+diff -ruN '--exclude=out' a/main/tamagroki/grok_face_display.h b/main/tamagroki/grok_face_display.h
+--- a/main/tamagroki/grok_face_display.h	1969-12-31 18:00:00.000000000 -0600
++++ b/main/tamagroki/grok_face_display.h	2026-10-15 16:16:08.155756022 -0500
+@@ -0,0 +1,36 @@
++// SpiLcdDisplay that replaces xiaozhi's chat UI with the full-screen Tamagroki face.
++#pragma once
++#include "lcd_display.h"
++#include "grok_face.h"
++#include <string>
++
++class GrokFaceDisplay : public SpiLcdDisplay {
++public:
++    using SpiLcdDisplay::SpiLcdDisplay;
++    ~GrokFaceDisplay() override;
++
++    void SetupUI() override;
++    void SetEmotion(const char* emotion) override;
++    void SetChatMessage(const char* role, const char* content) override;
++    void ClearChatMessages() override;
++    void SetStatus(const char* status) override;
++    void ShowNotification(const char* notification, int duration_ms = 3000) override;
++    void ShowNotification(const std::string& notification, int duration_ms = 3000) override;
++    void SetPowerSaveMode(bool on) override;
++    void UpdateStatusBar(bool update_all = false) override {}
++
++    // Simulates a "pick-up" or other external nudge: wakes the face from sleep.
++    void Nudge();
++
++private:
++    static void TimerCb(lv_timer_t* t);
++    void OnTick();
++
++    GrokFace face_;
++    lv_timer_t* timer_ = nullptr;
++    bool power_save_ = false;
++    bool thinking_hint_ = false;   // set by llm emotion "thinking", cleared on state change
++    int last_device_state_ = -1;
++    uint32_t notification_until_ = 0;
++    std::string system_caption_;
++};
+diff -ruN '--exclude=out' a/main/tamagroki/qmi8658_pickup.cc b/main/tamagroki/qmi8658_pickup.cc
+--- a/main/tamagroki/qmi8658_pickup.cc	1969-12-31 18:00:00.000000000 -0600
++++ b/main/tamagroki/qmi8658_pickup.cc	2026-10-15 16:16:08.159756022 -0500
+@@ -0,0 +1,71 @@
++#include "qmi8658_pickup.h"
++#include <esp_log.h>
++#include <freertos/FreeRTOS.h>
++#include <freertos/task.h>
++#include <math.h>
++
++#define TAG "Qmi8658Pickup"
++
++// Registers (QMI8658 datasheet rev 0.9)
++static constexpr uint8_t REG_WHO_AM_I = 0x00;  // 0x05
++static constexpr uint8_t REG_CTRL1 = 0x02;     // bit6 ADDR_AI auto increment
++static constexpr uint8_t REG_CTRL2 = 0x03;     // accel FS[6:4], ODR[3:0]
++static constexpr uint8_t REG_CTRL7 = 0x08;     // bit0 aEN
++static constexpr uint8_t REG_AX_L = 0x35;
++
++Qmi8658Pickup::Qmi8658Pickup(i2c_master_bus_handle_t bus, uint8_t addr) : I2cDevice(bus, addr) {
++    uint8_t who = ReadReg(REG_WHO_AM_I);
++    if (who != 0x05) {
++        ESP_LOGW(TAG, "QMI8658 not found (WHO_AM_I=0x%02X)", who);
++        return;
++    }
++    WriteReg(REG_CTRL1, 0x40);  // address auto-increment, little endian
++    WriteReg(REG_CTRL2, 0x16);  // +-4 g (FS=001), ODR ~ 62.5 Hz (0110)
++    WriteReg(REG_CTRL7, 0x01);  // accel only
++    ok_ = true;
++    ESP_LOGI(TAG, "QMI8658 ready");
++}
++
++bool Qmi8658Pickup::ReadAccelMg(float& x, float& y, float& z) {
++    uint8_t b[6];
++    ReadRegs(REG_AX_L, b, 6);
++    auto s = [&](int i) { return (int16_t)(b[i] | (b[i + 1] << 8)); };
++    const float lsb_per_g = 8192.0f;  // +-4 g
++    x = s(0) * 1000.0f / lsb_per_g;
++    y = s(2) * 1000.0f / lsb_per_g;
++    z = s(4) * 1000.0f / lsb_per_g;
++    return true;
++}
++
++void Qmi8658Pickup::Start(std::function<void()> on_pickup, int threshold_mg) {
++    if (!ok_) return;
++    on_pickup_ = std::move(on_pickup);
++    threshold_mg_ = threshold_mg;
++    xTaskCreate(TaskEntry, "imu_pickup", 3072, this, 2, nullptr);
++}
++
++void Qmi8658Pickup::TaskEntry(void* arg) { static_cast<Qmi8658Pickup*>(arg)->Run(); }
++
++void Qmi8658Pickup::Run() {
++    float rx = 0, ry = 0, rz = 0;  // slow "resting" gravity estimate
++    bool init = false;
++    int hits = 0;
++    TickType_t cooldown_until = 0;
++    while (true) {
++        vTaskDelay(pdMS_TO_TICKS(50));
++        float x, y, z;
++        if (!ReadAccelMg(x, y, z)) continue;
++        if (!init) { rx = x; ry = y; rz = z; init = true; continue; }
++        float dx = x - rx, dy = y - ry, dz = z - rz;
++        float dev = sqrtf(dx * dx + dy * dy + dz * dz);
++        // resting estimate follows slowly (~2 s time constant)
++        rx += 0.025f * dx; ry += 0.025f * dy; rz += 0.025f * dz;
++        hits = dev > threshold_mg_ ? hits + 1 : 0;
++        if (hits >= 3 && xTaskGetTickCount() > cooldown_until) {  // ~150 ms of motion
++            hits = 0;
++            cooldown_until = xTaskGetTickCount() + pdMS_TO_TICKS(8000);
++            ESP_LOGI(TAG, "pick-up detected (dev=%.0f mg)", dev);
++            if (on_pickup_) on_pickup_();
++        }
++    }
++}
+diff -ruN '--exclude=out' a/main/tamagroki/qmi8658_pickup.h b/main/tamagroki/qmi8658_pickup.h
+--- a/main/tamagroki/qmi8658_pickup.h	1969-12-31 18:00:00.000000000 -0600
++++ b/main/tamagroki/qmi8658_pickup.h	2026-10-15 16:16:08.159756022 -0500
+@@ -0,0 +1,20 @@
++// Minimal QMI8658 accelerometer poller: fires a callback when the cube is picked up
++// (sustained deviation of |a| from 1 g, or a big orientation change).
++#pragma once
++#include "i2c_device.h"
++#include <functional>
++
++class Qmi8658Pickup : public I2cDevice {
++public:
++    Qmi8658Pickup(i2c_master_bus_handle_t bus, uint8_t addr = 0x6B);
++    bool ok() const { return ok_; }
++    void Start(std::function<void()> on_pickup, int threshold_mg);
++
++private:
++    static void TaskEntry(void* arg);
++    void Run();
++    bool ReadAccelMg(float& x, float& y, float& z);
++    bool ok_ = false;
++    int threshold_mg_ = 350;
++    std::function<void()> on_pickup_;
++};
+diff -ruN '--exclude=out' a/main/tamagroki/tamagroki.h b/main/tamagroki/tamagroki.h
+--- a/main/tamagroki/tamagroki.h	1969-12-31 18:00:00.000000000 -0600
++++ b/main/tamagroki/tamagroki.h	2026-10-15 16:16:08.159756022 -0500
+@@ -0,0 +1,12 @@
++// Tamagroki cube glue shared between the face, audio path and board.
++#pragma once
++#include <atomic>
++#include <cstddef>
++#include <cstdint>
++
++namespace tamagroki {
++// Loudness (0..1) of the PCM currently being sent to the speaker.
++// Written by AudioService's output task, read by the face timer.
++extern std::atomic<float> g_playback_level;
++void ReportPlaybackPcm(const int16_t* pcm, size_t samples);
++}  // namespace tamagroki
+diff -ruN '--exclude=out' a/main/tamagroki/tamagroki_audio.cc b/main/tamagroki/tamagroki_audio.cc
+--- a/main/tamagroki/tamagroki_audio.cc	1969-12-31 18:00:00.000000000 -0600
++++ b/main/tamagroki/tamagroki_audio.cc	2026-10-15 16:16:08.159756022 -0500
+@@ -0,0 +1,19 @@
++#include <stddef.h>
++#include <stdint.h>
++#include <math.h>
++#include "tamagroki.h"
++
++namespace tamagroki {
++std::atomic<float> g_playback_level{0.0f};
++
++void ReportPlaybackPcm(const int16_t* pcm, size_t samples) {
++    if (samples == 0) return;
++    double acc = 0;
++    for (size_t i = 0; i < samples; i++) acc += (double)pcm[i] * pcm[i];
++    float rms = sqrtf((float)(acc / samples)) / 32768.0f;
++    // map ~-40 dBFS..-6 dBFS onto 0..1
++    float db = 20.0f * log10f(rms + 1e-6f);
++    float lvl = (db + 40.0f) / 34.0f;
++    g_playback_level.store(lvl < 0 ? 0 : (lvl > 1 ? 1 : lvl), std::memory_order_relaxed);
++}
++}  // namespace tamagroki
+diff -ruN '--exclude=out' a/scripts/build_default_assets.py b/scripts/build_default_assets.py
+--- a/scripts/build_default_assets.py	2026-10-14 19:51:46.000000000 -0500
++++ b/scripts/build_default_assets.py	2026-10-15 16:16:08.159756022 -0500
+@@ -1069,10 +1069,11 @@
+             "threshold": custom_wake_word_config['threshold'],
+             "commands": [
+                 {
+-                    "command": custom_wake_word_config['wake_word'],
++                    "command": phrase.strip(),
+                     "text": custom_wake_word_config['display'],
+                     "action": "wake"
+                 }
++                for phrase in custom_wake_word_config['wake_word'].split(';') if phrase.strip()
+             ]
+         }
+         print(f"  custom wake word: {custom_wake_word_config['wake_word']} ({custom_wake_word_config['display']})")
+diff -ruN '--exclude=out' a/sim/face/.gitignore b/sim/face/.gitignore
+--- a/sim/face/.gitignore	1969-12-31 18:00:00.000000000 -0600
++++ b/sim/face/.gitignore	2026-10-15 16:16:08.119756022 -0500
+@@ -0,0 +1 @@
++out/*.ppm
+diff -ruN '--exclude=out' a/sim/face/CMakeLists.txt b/sim/face/CMakeLists.txt
+--- a/sim/face/CMakeLists.txt	1969-12-31 18:00:00.000000000 -0600
++++ b/sim/face/CMakeLists.txt	2026-10-15 16:16:08.119756022 -0500
+@@ -0,0 +1,15 @@
++cmake_minimum_required(VERSION 3.16)
++project(grokface_sim C CXX)
++set(CMAKE_CXX_STANDARD 17)
++if(DEFINED ENV{LVGL_DIR})
++  set(LVGL_DIR "$ENV{LVGL_DIR}")
++else()
++  set(LVGL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../lvgl-sim")
++endif()
++set(LV_CONF_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lv_conf.h" CACHE STRING "" FORCE)
++set(CONFIG_LV_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
++set(CONFIG_LV_BUILD_DEMOS OFF CACHE BOOL "" FORCE)
++add_subdirectory(${LVGL_DIR} lvgl)
++add_executable(grokface_sim main.cc ../../main/tamagroki/grok_face.cc)
++target_include_directories(grokface_sim PRIVATE ../../main/tamagroki)
++target_link_libraries(grokface_sim lvgl m)
+diff -ruN '--exclude=out' a/sim/face/lv_conf.h b/sim/face/lv_conf.h
+--- a/sim/face/lv_conf.h	1969-12-31 18:00:00.000000000 -0600
++++ b/sim/face/lv_conf.h	2026-10-15 16:16:08.119756022 -0500
+@@ -0,0 +1,1526 @@
++/**
++ * @file lv_conf.h
++ * Configuration file for v9.5.0
++ */
++
++/*
++ * Copy this file as `lv_conf.h`
++ * 1. simply next to `lvgl` folder
++ * 2. or to any other place and
++ *    - define `LV_CONF_INCLUDE_SIMPLE`;
++ *    - add the path as an include path.
++ */
++
++/* clang-format off */
++#if 1
++
++#ifndef LV_CONF_H
++#define LV_CONF_H
++
++/* If you need to include anything here, do it inside the `__ASSEMBLY__` guard */
++#if  0 && defined(__ASSEMBLY__)
++#include "my_include.h"
++#endif
++
++/*====================
++   COLOR SETTINGS
++ *====================*/
++
++/** Color depth: 1 (I1), 8 (L8), 16 (RGB565), 24 (RGB888), 32 (XRGB8888) */
++#define LV_COLOR_DEPTH 32
++
++/*=========================
++   STDLIB WRAPPER SETTINGS
++ *=========================*/
++
++/** Possible values
++ * - LV_STDLIB_BUILTIN:     LVGL's built in implementation
++ * - LV_STDLIB_CLIB:        Standard C functions, like malloc, strlen, etc
++ * - LV_STDLIB_MICROPYTHON: MicroPython implementation
++ * - LV_STDLIB_RTTHREAD:    RT-Thread implementation
++ * - LV_STDLIB_CUSTOM:      Implement the functions externally
++ */
++#define LV_USE_STDLIB_MALLOC    LV_STDLIB_BUILTIN
++
++/** Possible values
++ * - LV_STDLIB_BUILTIN:     LVGL's built in implementation
++ * - LV_STDLIB_CLIB:        Standard C functions, like malloc, strlen, etc
++ * - LV_STDLIB_MICROPYTHON: MicroPython implementation
++ * - LV_STDLIB_RTTHREAD:    RT-Thread implementation
++ * - LV_STDLIB_CUSTOM:      Implement the functions externally
++ */
++#define LV_USE_STDLIB_STRING    LV_STDLIB_BUILTIN
++
++/** Possible values
++ * - LV_STDLIB_BUILTIN:     LVGL's built in implementation
++ * - LV_STDLIB_CLIB:        Standard C functions, like malloc, strlen, etc
++ * - LV_STDLIB_MICROPYTHON: MicroPython implementation
++ * - LV_STDLIB_RTTHREAD:    RT-Thread implementation
++ * - LV_STDLIB_CUSTOM:      Implement the functions externally
++ */
++#define LV_USE_STDLIB_SPRINTF   LV_STDLIB_BUILTIN
++
++#define LV_STDINT_INCLUDE       <stdint.h>
++#define LV_STDDEF_INCLUDE       <stddef.h>
++#define LV_STDBOOL_INCLUDE      <stdbool.h>
++#define LV_INTTYPES_INCLUDE     <inttypes.h>
++#define LV_LIMITS_INCLUDE       <limits.h>
++#define LV_STDARG_INCLUDE       <stdarg.h>
++
++#if LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN
++    /** Size of memory available for `lv_malloc()` in bytes (>= 2kB) */
++    #define LV_MEM_SIZE (2048 * 1024U)          /**< [bytes] */
++
++    /** Size of the memory expand for `lv_malloc()` in bytes */
++    #define LV_MEM_POOL_EXPAND_SIZE 0
++
++    /** Set an address for the memory pool instead of allocating it as a normal array. Can be in external SRAM too. */
++    #define LV_MEM_ADR 0     /**< 0: unused*/
++    /* Instead of an address give a memory allocator that will be called to get a memory pool for LVGL. E.g. my_malloc */
++    #if LV_MEM_ADR == 0
++        #undef LV_MEM_POOL_INCLUDE
++        #undef LV_MEM_POOL_ALLOC
++    #endif
++#endif  /*LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN*/
++
++/*====================
++   HAL SETTINGS
++ *====================*/
++
++/** Default display refresh, input device read and animation step period. */
++#define LV_DEF_REFR_PERIOD  33      /**< [ms] */
++
++/** Default Dots Per Inch. Used to initialize default sizes such as widgets sized, style paddings.
++ * (Not so important, you can adjust it to modify default sizes and spaces.) */
++#define LV_DPI_DEF 130              /**< [px/inch] */
++
++/*=================
++ * OPERATING SYSTEM
++ *=================*/
++/** Select operating system to use. Possible options:
++ * - LV_OS_NONE
++ * - LV_OS_PTHREAD
++ * - LV_OS_FREERTOS
++ * - LV_OS_CMSIS_RTOS2
++ * - LV_OS_RTTHREAD
++ * - LV_OS_WINDOWS
++ * - LV_OS_MQX
++ * - LV_OS_SDL2
++ * - LV_OS_CUSTOM */
++#define LV_USE_OS   LV_OS_NONE
++
++#if LV_USE_OS == LV_OS_CUSTOM
++    #define LV_OS_CUSTOM_INCLUDE <stdint.h>
++#endif
++#if LV_USE_OS == LV_OS_FREERTOS
++    /*
++     * Unblocking an RTOS task with a direct notification is 45% faster and uses less RAM
++     * than unblocking a task using an intermediary object such as a binary semaphore.
++     * RTOS task notifications can only be used when there is only one task that can be the recipient of the event.
++     */
++    #define LV_USE_FREERTOS_TASK_NOTIFY 1
++#endif
++
++/*========================
++ * RENDERING CONFIGURATION
++ *========================*/
++
++/** Align stride of all layers and images to this bytes */
++#define LV_DRAW_BUF_STRIDE_ALIGN                1
++
++/** Align start address of draw_buf addresses to this bytes*/
++#define LV_DRAW_BUF_ALIGN                       4
++
++/** Using matrix for transformations.
++ * Requirements:
++ * - `LV_USE_MATRIX = 1`.
++ * - Rendering engine needs to support 3x3 matrix transformations. */
++#define LV_DRAW_TRANSFORM_USE_MATRIX            0
++
++/* If a widget has `style_opa < 255` (not `bg_opa`, `text_opa` etc) or not NORMAL blend mode
++ * it is buffered into a "simple" layer before rendering. The widget can be buffered in smaller chunks.
++ * "Transformed layers" (if `transform_angle/zoom` are set) use larger buffers
++ * and can't be drawn in chunks. */
++
++/** The target buffer size for simple layer chunks. */
++#define LV_DRAW_LAYER_SIMPLE_BUF_SIZE    (24 * 1024)    /**< [bytes]*/
++
++/* Limit the max allocated memory for simple and transformed layers.
++ * It should be at least `LV_DRAW_LAYER_SIMPLE_BUF_SIZE` sized but if transformed layers are also used
++ * it should be enough to store the largest widget too (width x height x 4 area).
++ * Set it to 0 to have no limit. */
++#define LV_DRAW_LAYER_MAX_MEMORY 0  /**< No limit by default [bytes]*/
++
++/** Stack size of drawing thread.
++ * NOTE: If FreeType or ThorVG is enabled, it is recommended to set it to 32KB or more.
++ */
++#define LV_DRAW_THREAD_STACK_SIZE    (8 * 1024)         /**< [bytes]*/
++
++/** Thread priority of the drawing task.
++ *  Higher values mean higher priority.
++ *  Can use values from lv_thread_prio_t enum in lv_os.h: LV_THREAD_PRIO_LOWEST,
++ *  LV_THREAD_PRIO_LOW, LV_THREAD_PRIO_MID, LV_THREAD_PRIO_HIGH, LV_THREAD_PRIO_HIGHEST
++ *  Make sure the priority value aligns with the OS-specific priority levels.
++ *  On systems with limited priority levels (e.g., FreeRTOS), a higher value can improve
++ *  rendering performance but might cause other tasks to starve. */
++#define LV_DRAW_THREAD_PRIO LV_THREAD_PRIO_HIGH
++
++#define LV_USE_DRAW_SW 1
++#if LV_USE_DRAW_SW == 1
++    /*
++     * Selectively disable color format support in order to reduce code size.
++     * NOTE: some features use certain color formats internally, e.g.
++     * - gradients use RGB888
++     * - bitmaps with transparency may use ARGB8888
++     */
++    #define LV_DRAW_SW_SUPPORT_RGB565       1
++    #define LV_DRAW_SW_SUPPORT_RGB565_SWAPPED       1
++    #define LV_DRAW_SW_SUPPORT_RGB565A8     1
++    #define LV_DRAW_SW_SUPPORT_RGB888       1
++    #define LV_DRAW_SW_SUPPORT_XRGB8888     1
++    #define LV_DRAW_SW_SUPPORT_ARGB8888     1
++    #define LV_DRAW_SW_SUPPORT_ARGB8888_PREMULTIPLIED 1
++    #define LV_DRAW_SW_SUPPORT_L8           1
++    #define LV_DRAW_SW_SUPPORT_AL88         1
++    #define LV_DRAW_SW_SUPPORT_A8           1
++    #define LV_DRAW_SW_SUPPORT_I1           1
++
++    /* The threshold of the luminance to consider a pixel as
++     * active in indexed color format */
++    #define LV_DRAW_SW_I1_LUM_THRESHOLD 127
++
++    /** Set number of draw units.
++     *  - > 1 requires operating system to be enabled in `LV_USE_OS`.
++     *  - > 1 means multiple threads will render the screen in parallel. */
++    #define LV_DRAW_SW_DRAW_UNIT_CNT    1
++
++    /** Use Arm-2D to accelerate software (sw) rendering. */
++    #define LV_USE_DRAW_ARM2D_SYNC      0
++
++    /** Enable native helium assembly to be compiled. */
++    #define LV_USE_NATIVE_HELIUM_ASM    0
++
++    /**
++     * - 0: Use a simple renderer capable of drawing only simple rectangles with gradient, images, text, and straight lines only.
++     * - 1: Use a complex renderer capable of drawing rounded corners, shadow, skew lines, and arcs too. */
++    #define LV_DRAW_SW_COMPLEX          1
++
++    #if LV_DRAW_SW_COMPLEX == 1
++        /** Allow buffering some shadow calculation.
++         *  LV_DRAW_SW_SHADOW_CACHE_SIZE is the maximum shadow size to buffer, where shadow size is
++         *  `shadow_width + radius`.  Caching has LV_DRAW_SW_SHADOW_CACHE_SIZE^2 RAM cost. */
++        #define LV_DRAW_SW_SHADOW_CACHE_SIZE 0
++
++        /** Set number of maximally-cached circle data.
++         *  The circumference of 1/4 circle are saved for anti-aliasing.
++         *  `radius * 4` bytes are used per circle (the most often used radiuses are saved).
++         *  - 0: disables caching */
++        #define LV_DRAW_SW_CIRCLE_CACHE_SIZE 4
++    #endif
++
++    #define  LV_USE_DRAW_SW_ASM     LV_DRAW_SW_ASM_NONE
++
++    #if LV_USE_DRAW_SW_ASM == LV_DRAW_SW_ASM_CUSTOM
++        #define  LV_DRAW_SW_ASM_CUSTOM_INCLUDE ""
++    #endif
++
++    /** Enable drawing complex gradients in software: linear at an angle, radial or conical */
++    #define LV_USE_DRAW_SW_COMPLEX_GRADIENTS    0
++
++#endif
++
++/*Use TSi's aka (Think Silicon) NemaGFX */
++#define LV_USE_NEMA_GFX 0
++
++#if LV_USE_NEMA_GFX
++    /** Select which NemaGFX static library headers to use. Possible options:
++     * - LV_NEMA_LIB_NONE           an alias of LV_NEMA_LIB_M33_REVC
++     * - LV_NEMA_LIB_M33_REVC
++     * - LV_NEMA_LIB_M33_NEMAPVG
++     * - LV_NEMA_LIB_M55
++     * - LV_NEMA_LIB_M7
++     * You must also take care to link the correct corresponding static library
++     * in libs/nema_gfx/lib/core/
++     */
++    #define LV_USE_NEMA_LIB LV_NEMA_LIB_NONE
++
++    /** Select which NemaGFX HAL to use. Possible options:
++     * - LV_NEMA_HAL_CUSTOM
++     * - LV_NEMA_HAL_STM32 */
++    #define LV_USE_NEMA_HAL LV_NEMA_HAL_CUSTOM
++    #if LV_USE_NEMA_HAL == LV_NEMA_HAL_STM32
++        #define LV_NEMA_STM32_HAL_INCLUDE <stm32u5xx_hal.h>
++
++        /** Set it to a value like __attribute__((section("Nemagfx_Memory_Pool_Buffer")))
++         * and define the section in the linker script if you need the GPU memory to
++         * be, e.g. in a region where accesses will not be cached.
++         */
++        #define LV_NEMA_STM32_HAL_ATTRIBUTE_POOL_MEM
++    #endif
++
++    /*Enable Vector Graphics Operations. Available only if NemaVG library is present*/
++    #define LV_USE_NEMA_VG 0
++    #if LV_USE_NEMA_VG
++        /*Define application's resolution used for VG related buffer allocation */
++        #define LV_NEMA_GFX_MAX_RESX 800
++        #define LV_NEMA_GFX_MAX_RESY 600
++    #endif
++#endif
++
++/** Use NXP's PXP on iMX RTxxx platforms. */
++#define LV_USE_PXP 0
++
++#if LV_USE_PXP
++    /** Use PXP for drawing.*/
++    #define LV_USE_DRAW_PXP 1
++
++    /** Use PXP to rotate display.*/
++    #define LV_USE_ROTATE_PXP 0
++
++    #if LV_USE_DRAW_PXP && LV_USE_OS
++        /** Use additional draw thread for PXP processing.*/
++        #define LV_USE_PXP_DRAW_THREAD 1
++    #endif
++
++    /** Enable PXP asserts. */
++    #define LV_USE_PXP_ASSERT 0
++#endif
++
++/** Use NXP's G2D on MPU platforms. */
++#define LV_USE_G2D 0
++
++#if LV_USE_G2D
++    /** Use G2D for drawing. **/
++    #define LV_USE_DRAW_G2D 1
++
++    /** Use G2D to rotate display. **/
++    #define LV_USE_ROTATE_G2D 0
++
++    /** Maximum number of buffers that can be stored for G2D draw unit.
++     *  Includes the frame buffers and assets. */
++    #define LV_G2D_HASH_TABLE_SIZE 50
++
++    #if LV_USE_DRAW_G2D && LV_USE_OS
++        /** Use additional draw thread for G2D processing.*/
++        #define LV_USE_G2D_DRAW_THREAD 1
++    #endif
++
++    /** Enable G2D asserts. */
++    #define LV_USE_G2D_ASSERT 0
++#endif
++
++/** Use Renesas Dave2D on RA  platforms. */
++#define LV_USE_DRAW_DAVE2D 0
++
++/** Draw using cached SDL textures*/
++#define LV_USE_DRAW_SDL 0
++
++/** Use VG-Lite GPU. */
++#define LV_USE_DRAW_VG_LITE 0
++#if LV_USE_DRAW_VG_LITE
++    /** Enable VG-Lite custom external 'gpu_init()' function */
++    #define LV_VG_LITE_USE_GPU_INIT 0
++
++    /** Enable VG-Lite assert. */
++    #define LV_VG_LITE_USE_ASSERT 0
++
++    /** VG-Lite flush commit trigger threshold. GPU will try to batch these many draw tasks. */
++    #define LV_VG_LITE_FLUSH_MAX_COUNT 8
++
++    /** Enable border to simulate shadow.
++     *  NOTE: which usually improves performance,
++     *  but does not guarantee the same rendering quality as the software. */
++    #define LV_VG_LITE_USE_BOX_SHADOW 1
++
++    /** VG-Lite gradient maximum cache number.
++     *  @note  The memory usage of a single gradient image is 4K bytes. */
++    #define LV_VG_LITE_GRAD_CACHE_CNT 32
++
++    /** VG-Lite stroke maximum cache number. */
++    #define LV_VG_LITE_STROKE_CACHE_CNT 32
++
++    /** VG-Lite unaligned bitmap font maximum cache number. */
++    #define LV_VG_LITE_BITMAP_FONT_CACHE_CNT 256
++
++    /** Remove VLC_OP_CLOSE path instruction (Workaround for NXP) **/
++    #define LV_VG_LITE_DISABLE_VLC_OP_CLOSE 0
++
++    /** Disable blit rectangular offset to resolve certain hardware errors. */
++    #define LV_VG_LITE_DISABLE_BLIT_RECT_OFFSET 0
++
++    /** Disable linear gradient extension for some older versions of drivers. */
++    #define LV_VG_LITE_DISABLE_LINEAR_GRADIENT_EXT 0
++
++    /** Maximum path dump print length (in points) */
++    #define LV_VG_LITE_PATH_DUMP_MAX_LEN 1000
++
++    /** Enable usage of the LVGL's built-in vg_lite driver */
++    #define LV_USE_VG_LITE_DRIVER  0
++    #if LV_USE_VG_LITE_DRIVER
++        /** Used to pick the correct GPU series folder valid options are gc255, gc355 and gc555*/
++        #define LV_VG_LITE_HAL_GPU_SERIES gc255
++
++        /** Used to pick the correct GPU revision header it depends on the vendor */
++        #define LV_VG_LITE_HAL_GPU_REVISION 0x40
++
++        /** Base memory address of the GPU IP it depends on SoC,
++         *  default value is for NXP based devices */
++        #define LV_VG_LITE_HAL_GPU_BASE_ADDRESS 0x40240000
++    #endif /*LV_USE_VG_LITE_DRIVER*/
++
++    /** Use ThorVG (a software vector library) as VG-Lite driver to allow testing VGLite on PC
++     *  Requires: LV_USE_THORVG_INTERNAL or LV_USE_THORVG_EXTERNAL */
++    #define LV_USE_VG_LITE_THORVG   0
++    #if LV_USE_VG_LITE_THORVG
++        /** Enable LVGL's blend mode support */
++        #define LV_VG_LITE_THORVG_LVGL_BLEND_SUPPORT 0
++
++        /** Enable YUV color format support */
++        #define LV_VG_LITE_THORVG_YUV_SUPPORT 0
++
++        /** Enable Linear gradient extension support */
++        #define LV_VG_LITE_THORVG_LINEAR_GRADIENT_EXT_SUPPORT 0
++
++        /** Enable alignment on 16 pixels */
++        #define LV_VG_LITE_THORVG_16PIXELS_ALIGN 1
++
++        /** Buffer address alignment */
++        #define LV_VG_LITE_THORVG_BUF_ADDR_ALIGN 64
++
++        /** Enable multi-thread render */
++        #define LV_VG_LITE_THORVG_THREAD_RENDER 0
++    #endif /*LV_USE_VG_LITE_THORVG*/
++#endif
++
++/** Accelerate blends, fills, etc. with STM32 DMA2D */
++#define LV_USE_DRAW_DMA2D 0
++#if LV_USE_DRAW_DMA2D
++    #define LV_DRAW_DMA2D_HAL_INCLUDE "stm32h7xx_hal.h"
++
++    /* if enabled, the user is required to call `lv_draw_dma2d_transfer_complete_interrupt_handler`
++     * upon receiving the DMA2D global interrupt
++     */
++    #define LV_USE_DRAW_DMA2D_INTERRUPT 0
++#endif
++
++/** Draw using cached OpenGLES textures. Requires LV_USE_OPENGLES */
++#define LV_USE_DRAW_OPENGLES 0
++#if LV_USE_DRAW_OPENGLES
++    #define LV_DRAW_OPENGLES_TEXTURE_CACHE_COUNT 64
++#endif
++
++/** Draw using espressif PPA accelerator */
++#define LV_USE_PPA  0
++#if LV_USE_PPA
++    #define LV_USE_PPA_IMG      0
++    #define LV_PPA_BURST_LENGTH    128
++#endif
++
++/* Use EVE FT81X GPU. */
++#define LV_USE_DRAW_EVE 0
++#if LV_USE_DRAW_EVE
++    /* EVE_GEN value: 2, 3, or 4 */
++    #define LV_DRAW_EVE_EVE_GENERATION 4
++
++    /* The maximum number of bytes to buffer before a single SPI transmission.
++     * Set it to 0 to disable write buffering.
++     */
++    #define LV_DRAW_EVE_WRITE_BUFFER_SIZE 2048
++#endif
++
++/** Use NanoVG Renderer
++ * - Requires LV_USE_NANOVG, LV_USE_MATRIX.
++ */
++#define LV_USE_DRAW_NANOVG 0
++#if LV_USE_DRAW_NANOVG
++    /** Select OpenGL backend for NanoVG:
++     * - LV_NANOVG_BACKEND_GL2:   OpenGL 2.0
++     * - LV_NANOVG_BACKEND_GL3:   OpenGL 3.0+
++     * - LV_NANOVG_BACKEND_GLES2: OpenGL ES 2.0
++     * - LV_NANOVG_BACKEND_GLES3: OpenGL ES 3.0+
++     */
++    #define LV_NANOVG_BACKEND   LV_NANOVG_BACKEND_GLES2
++
++    /** Draw image texture cache count. */
++    #define LV_NANOVG_IMAGE_CACHE_CNT 128
++
++    /** Draw letter texture cache count. */
++    #define LV_NANOVG_LETTER_CACHE_CNT 512
++#endif
++
++/*=======================
++ * FEATURE CONFIGURATION
++ *=======================*/
++
++/*-------------
++ * Logging
++ *-----------*/
++
++/** Enable log module */
++#define LV_USE_LOG 0
++#if LV_USE_LOG
++    /** Set value to one of the following levels of logging detail:
++     *  - LV_LOG_LEVEL_TRACE    Log detailed information.
++     *  - LV_LOG_LEVEL_INFO     Log important events.
++     *  - LV_LOG_LEVEL_WARN     Log if something unwanted happened but didn't cause a problem.
++     *  - LV_LOG_LEVEL_ERROR    Log only critical issues, when system may fail.
++     *  - LV_LOG_LEVEL_USER     Log only custom log messages added by the user.
++     *  - LV_LOG_LEVEL_NONE     Do not log anything. */
++    #define LV_LOG_LEVEL LV_LOG_LEVEL_WARN
++
++    /** - 1: Print log with 'printf';
++     *  - 0: User needs to register a callback with `lv_log_register_print_cb()`. */
++    #define LV_LOG_PRINTF 0
++
++    /** Set callback to print logs.
++     *  E.g `my_print`. The prototype should be `void my_print(lv_log_level_t level, const char * buf)`.
++     *  Can be overwritten by `lv_log_register_print_cb`. */
++    //#define LV_LOG_PRINT_CB
++
++    /** - 1: Enable printing timestamp;
++     *  - 0: Disable printing timestamp. */
++    #define LV_LOG_USE_TIMESTAMP 1
++
++    /** - 1: Print file and line number of the log;
++     *  - 0: Do not print file and line number of the log. */
++    #define LV_LOG_USE_FILE_LINE 1
++
++    /* Enable/disable LV_LOG_TRACE in modules that produces a huge number of logs. */
++    #define LV_LOG_TRACE_MEM        1   /**< Enable/disable trace logs in memory operations. */
++    #define LV_LOG_TRACE_TIMER      1   /**< Enable/disable trace logs in timer operations. */
++    #define LV_LOG_TRACE_INDEV      1   /**< Enable/disable trace logs in input device operations. */
++    #define LV_LOG_TRACE_DISP_REFR  1   /**< Enable/disable trace logs in display re-draw operations. */
++    #define LV_LOG_TRACE_EVENT      1   /**< Enable/disable trace logs in event dispatch logic. */
++    #define LV_LOG_TRACE_OBJ_CREATE 1   /**< Enable/disable trace logs in object creation (core `obj` creation plus every widget). */
++    #define LV_LOG_TRACE_LAYOUT     1   /**< Enable/disable trace logs in flex- and grid-layout operations. */
++    #define LV_LOG_TRACE_ANIM       1   /**< Enable/disable trace logs in animation logic. */
++    #define LV_LOG_TRACE_CACHE      1   /**< Enable/disable trace logs in cache operations. */
++#endif  /*LV_USE_LOG*/
++
++/*-------------
++ * Asserts
++ *-----------*/
++
++/* Enable assertion failures if an operation fails or invalid data is found.
++ * If LV_USE_LOG is enabled, an error message will be printed on failure. */
++#define LV_USE_ASSERT_NULL          1   /**< Check if the parameter is NULL. (Very fast, recommended) */
++#define LV_USE_ASSERT_MALLOC        1   /**< Checks is the memory is successfully allocated or no. (Very fast, recommended) */
++#define LV_USE_ASSERT_STYLE         0   /**< Check if the styles are properly initialized. (Very fast, recommended) */
++#define LV_USE_ASSERT_MEM_INTEGRITY 0   /**< Check the integrity of `lv_mem` after critical operations. (Slow) */
++#define LV_USE_ASSERT_OBJ           0   /**< Check the object's type and existence (e.g. not deleted). (Slow) */
++
++/** Add a custom handler when assert happens e.g. to restart MCU. */
++#define LV_ASSERT_HANDLER_INCLUDE <stdint.h>
++#define LV_ASSERT_HANDLER while(1);     /**< Halt by default */
++
++/*-------------
++ * Debug
++ *-----------*/
++
++/** 1: Draw random colored rectangles over the redrawn areas. */
++#define LV_USE_REFR_DEBUG 0
++
++/** 1: Draw a red overlay for ARGB layers and a green overlay for RGB layers*/
++#define LV_USE_LAYER_DEBUG 0
++
++/** 1: Adds the following behaviors for debugging:
++ *  - Draw overlays with different colors for each draw_unit's tasks.
++ *  - Draw index number of draw unit on white background.
++ *  - For layers, draws index number of draw unit on black background. */
++#define LV_USE_PARALLEL_DRAW_DEBUG 0
++
++/*-------------
++ * Others
++ *-----------*/
++
++#define LV_ENABLE_GLOBAL_CUSTOM 0
++#if LV_ENABLE_GLOBAL_CUSTOM
++    /** Header to include for custom 'lv_global' function" */
++    #define LV_GLOBAL_CUSTOM_INCLUDE <stdint.h>
++#endif
++
++/** Default cache size in bytes.
++ *  Used by image decoders such as `lv_lodepng` to keep the decoded image in memory.
++ *  If size is not set to 0, the decoder will fail to decode when the cache is full.
++ *  If size is 0, the cache function is not enabled and the decoded memory will be
++ *  released immediately after use. */
++#define LV_CACHE_DEF_SIZE       0
++
++/** Default number of image header cache entries. The cache is used to store the headers of images
++ *  The main logic is like `LV_CACHE_DEF_SIZE` but for image headers. */
++#define LV_IMAGE_HEADER_CACHE_DEF_CNT 0
++
++/** Number of stops allowed per gradient. Increase this to allow more stops.
++ *  This adds (sizeof(lv_color_t) + 1) bytes per additional stop. */
++#define LV_GRADIENT_MAX_STOPS   2
++
++/** Adjust color mix functions rounding. GPUs might calculate color mix (blending) differently.
++ *  - 0:   round down,
++ *  - 64:  round up from x.75,
++ *  - 128: round up from half,
++ *  - 192: round up from x.25,
++ *  - 254: round up */
++#define LV_COLOR_MIX_ROUND_OFS  0
++
++/** Add 2 x 32-bit variables to each `lv_obj_t` to speed up getting style properties */
++#define LV_OBJ_STYLE_CACHE      0
++
++/** Add `id` field to `lv_obj_t` */
++#define LV_USE_OBJ_ID           0
++
++/**  Enable support widget names*/
++#define LV_USE_OBJ_NAME         0
++
++/** Automatically assign an ID when obj is created */
++#define LV_OBJ_ID_AUTO_ASSIGN   LV_USE_OBJ_ID
++
++/** Use builtin obj ID handler functions:
++* - lv_obj_assign_id:       Called when a widget is created. Use a separate counter for each widget class as an ID.
++* - lv_obj_id_compare:      Compare the ID to decide if it matches with a requested value.
++* - lv_obj_stringify_id:    Return string-ified identifier, e.g. "button3".
++* - lv_obj_free_id:         Does nothing, as there is no memory allocation for the ID.
++* When disabled these functions needs to be implemented by the user.*/
++#define LV_USE_OBJ_ID_BUILTIN   1
++
++/** Use obj property set/get API. */
++#define LV_USE_OBJ_PROPERTY 0
++
++/** Enable property name support. */
++#define LV_USE_OBJ_PROPERTY_NAME 1
++
++/* Enable the multi-touch gesture recognition feature */
++/* Gesture recognition requires the use of floats */
++#define LV_USE_GESTURE_RECOGNITION 0
++
++/*=====================
++ *  COMPILER SETTINGS
++ *====================*/
++
++/** For big endian systems set to 1 */
++#define LV_BIG_ENDIAN_SYSTEM 0
++
++/** Define a custom attribute for `lv_tick_inc` function */
++#define LV_ATTRIBUTE_TICK_INC
++
++/** Define a custom attribute for `lv_timer_handler` function */
++#define LV_ATTRIBUTE_TIMER_HANDLER
++
++/** Define a custom attribute for `lv_display_flush_ready` function */
++#define LV_ATTRIBUTE_FLUSH_READY
++
++/** Align VG_LITE buffers on this number of bytes.
++ *  @note  vglite_src_buf_aligned() uses this value to validate alignment of passed buffer pointers. */
++#define LV_ATTRIBUTE_MEM_ALIGN_SIZE 1
++
++/** Will be added where memory needs to be aligned (with -Os data might not be aligned to boundary by default).
++ *  E.g. __attribute__((aligned(4)))*/
++#define LV_ATTRIBUTE_MEM_ALIGN
++
++/** Attribute to mark large constant arrays, for example for font bitmaps */
++#define LV_ATTRIBUTE_LARGE_CONST
++
++/** Compiler prefix for a large array declaration in RAM */
++#define LV_ATTRIBUTE_LARGE_RAM_ARRAY
++
++/** Place performance critical functions into a faster memory (e.g RAM) */
++#define LV_ATTRIBUTE_FAST_MEM
++
++/** Export integer constant to binding. This macro is used with constants in the form of LV_<CONST> that
++ *  should also appear on LVGL binding API such as MicroPython. */
++#define LV_EXPORT_CONST_INT(int_value) struct _silence_gcc_warning  /**< The default value just prevents GCC warning */
++
++/** Prefix all global extern data with this */
++#define LV_ATTRIBUTE_EXTERN_DATA
++
++/** Use `float` as `lv_value_precise_t` */
++#define LV_USE_FLOAT            0
++
++/** Enable matrix support
++ *  - Requires `LV_USE_FLOAT = 1` */
++#define LV_USE_MATRIX           0
++
++/** Include `lvgl_private.h` in `lvgl.h` to access internal data and functions by default */
++#ifndef LV_USE_PRIVATE_API
++    #define LV_USE_PRIVATE_API  0
++#endif
++
++/*==================
++ *   FONT USAGE
++ *===================*/
++
++/* Montserrat fonts with ASCII range and some symbols using bpp = 4
++ * https://fonts.google.com/specimen/Montserrat */
++#define LV_FONT_MONTSERRAT_8  0
++#define LV_FONT_MONTSERRAT_10 0
++#define LV_FONT_MONTSERRAT_12 0
++#define LV_FONT_MONTSERRAT_14 1
++#define LV_FONT_MONTSERRAT_16 0
++#define LV_FONT_MONTSERRAT_18 0
++#define LV_FONT_MONTSERRAT_20 0
++#define LV_FONT_MONTSERRAT_22 0
++#define LV_FONT_MONTSERRAT_24 1
++#define LV_FONT_MONTSERRAT_26 0
++#define LV_FONT_MONTSERRAT_28 0
++#define LV_FONT_MONTSERRAT_30 0
++#define LV_FONT_MONTSERRAT_32 0
++#define LV_FONT_MONTSERRAT_34 0
++#define LV_FONT_MONTSERRAT_36 0
++#define LV_FONT_MONTSERRAT_38 0
++#define LV_FONT_MONTSERRAT_40 0
++#define LV_FONT_MONTSERRAT_42 0
++#define LV_FONT_MONTSERRAT_44 0
++#define LV_FONT_MONTSERRAT_46 0
++#define LV_FONT_MONTSERRAT_48 0
++
++/* Demonstrate special features */
++#define LV_FONT_MONTSERRAT_28_COMPRESSED    0  /**< bpp = 3 */
++#define LV_FONT_DEJAVU_16_PERSIAN_HEBREW    0  /**< Hebrew, Arabic, Persian letters and all their forms */
++#define LV_FONT_SOURCE_HAN_SANS_SC_14_CJK   0  /**< 1338 most common CJK radicals */
++#define LV_FONT_SOURCE_HAN_SANS_SC_16_CJK   0  /**< 1338 most common CJK radicals */
++
++/** Pixel perfect monospaced fonts */
++#define LV_FONT_UNSCII_8  0
++#define LV_FONT_UNSCII_16 0
++
++/** Optionally declare custom fonts here.
++ *
++ *  You can use any of these fonts as the default font too and they will be available
++ *  globally.  Example:
++ *
++ *  @code
++ *  #define LV_FONT_CUSTOM_DECLARE   LV_FONT_DECLARE(my_font_1) LV_FONT_DECLARE(my_font_2)
++ *  @endcode
++ */
++#define LV_FONT_CUSTOM_DECLARE
++
++/** Always set a default font */
++#define LV_FONT_DEFAULT &lv_font_montserrat_14
++
++/** Enable handling large font and/or fonts with a lot of characters.
++ *  The limit depends on the font size, font face and bpp.
++ *  A compiler error will be triggered if a font needs it. */
++#define LV_FONT_FMT_TXT_LARGE 0
++
++/** Enables/disables support for compressed fonts. */
++#define LV_USE_FONT_COMPRESSED 0
++
++/** Enable drawing placeholders when glyph dsc is not found. */
++#define LV_USE_FONT_PLACEHOLDER 1
++
++/*=================
++ *  TEXT SETTINGS
++ *=================*/
++
++/**
++ * Select a character encoding for strings.
++ * Your IDE or editor should have the same character encoding.
++ * - LV_TXT_ENC_UTF8
++ * - LV_TXT_ENC_ASCII
++ */
++#define LV_TXT_ENC LV_TXT_ENC_UTF8
++
++/** While rendering text strings, break (wrap) text on these chars. */
++#define LV_TXT_BREAK_CHARS " ,.;:-_)]}"
++
++/** If a word is at least this long, will break wherever "prettiest".
++ *  To disable, set to a value <= 0. */
++#define LV_TXT_LINE_BREAK_LONG_LEN 0
++
++/** Minimum number of characters in a long word to put on a line before a break.
++ *  Depends on LV_TXT_LINE_BREAK_LONG_LEN. */
++#define LV_TXT_LINE_BREAK_LONG_PRE_MIN_LEN 3
++
++/** Minimum number of characters in a long word to put on a line after a break.
++ *  Depends on LV_TXT_LINE_BREAK_LONG_LEN. */
++#define LV_TXT_LINE_BREAK_LONG_POST_MIN_LEN 3
++
++/** Support bidirectional text. Allows mixing Left-to-Right and Right-to-Left text.
++ *  The direction will be processed according to the Unicode Bidirectional Algorithm:
++ *  https://www.w3.org/International/articles/inline-bidi-markup/uba-basics */
++#define LV_USE_BIDI 0
++#if LV_USE_BIDI
++    /*Set the default direction. Supported values:
++    *`LV_BASE_DIR_LTR` Left-to-Right
++    *`LV_BASE_DIR_RTL` Right-to-Left
++    *`LV_BASE_DIR_AUTO` detect text base direction*/
++    #define LV_BIDI_BASE_DIR_DEF LV_BASE_DIR_AUTO
++#endif
++
++/** Enable Arabic/Persian processing
++ *  In these languages characters should be replaced with another form based on their position in the text */
++#define LV_USE_ARABIC_PERSIAN_CHARS 0
++
++/*The control character to use for signaling text recoloring*/
++#define LV_TXT_COLOR_CMD "#"
++
++/*==================
++ * WIDGETS
++ *================*/
++/* Documentation for widgets can be found here: https://docs.lvgl.io/master/widgets/index.html . */
++
++/** 1: Causes these widgets to be given default values at creation time.
++ *  - lv_buttonmatrix_t:  Get default maps:  {"Btn1", "Btn2", "Btn3", "\n", "Btn4", "Btn5", ""}, else map not set.
++ *  - lv_checkbox_t    :  String label set to "Check box", else set to empty string.
++ *  - lv_dropdown_t    :  Options set to "Option 1", "Option 2", "Option 3", else no values are set.
++ *  - lv_roller_t      :  Options set to "Option 1", "Option 2", "Option 3", "Option 4", "Option 5", else no values are set.
++ *  - lv_label_t       :  Text set to "Text", else empty string.
++ *  - lv_arclabel_t   :  Text set to "Arced Text", else empty string.
++ * */
++#define LV_WIDGETS_HAS_DEFAULT_VALUE  1
++
++#define LV_USE_ANIMIMG    1
++
++#define LV_USE_ARC        1
++
++#define LV_USE_ARCLABEL  1
++
++#define LV_USE_BAR        1
++
++#define LV_USE_BUTTON        1
++
++#define LV_USE_BUTTONMATRIX  1
++
++#define LV_USE_CALENDAR   1
++#if LV_USE_CALENDAR
++    #define LV_CALENDAR_WEEK_STARTS_MONDAY 0
++    #if LV_CALENDAR_WEEK_STARTS_MONDAY
++        #define LV_CALENDAR_DEFAULT_DAY_NAMES {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"}
++    #else
++        #define LV_CALENDAR_DEFAULT_DAY_NAMES {"Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"}
++    #endif
++
++    #define LV_CALENDAR_DEFAULT_MONTH_NAMES {"January", "February", "March",  "April", "May",  "June", "July", "August", "September", "October", "November", "December"}
++    #define LV_USE_CALENDAR_HEADER_ARROW 1
++    #define LV_USE_CALENDAR_HEADER_DROPDOWN 1
++    #define LV_USE_CALENDAR_CHINESE 0
++#endif  /*LV_USE_CALENDAR*/
++
++#define LV_USE_CANVAS     1
++
++#define LV_USE_CHART      1
++
++#define LV_USE_CHECKBOX   1
++
++#define LV_USE_DROPDOWN   1   /**< Requires: lv_label */
++
++#define LV_USE_IMAGE      1   /**< Requires: lv_label */
++
++#define LV_USE_IMAGEBUTTON     1
++
++#define LV_USE_KEYBOARD   1
++
++#define LV_USE_LABEL      1
++#if LV_USE_LABEL
++    #define LV_LABEL_TEXT_SELECTION 1   /**< Enable selecting text of the label */
++    #define LV_LABEL_LONG_TXT_HINT 1    /**< Store some extra info in labels to speed up drawing of very long text */
++    #define LV_LABEL_WAIT_CHAR_COUNT 3  /**< The count of wait chart */
++#endif
++
++#define LV_USE_LED        1
++
++#define LV_USE_LINE       1
++
++#define LV_USE_LIST       1
++
++#define LV_USE_LOTTIE     0  /**< Requires: lv_canvas, thorvg */
++
++#define LV_USE_MENU       1
++
++#define LV_USE_MSGBOX     1
++
++#define LV_USE_ROLLER     1   /**< Requires: lv_label */
++
++#define LV_USE_SCALE      1
++
++#define LV_USE_SLIDER     1   /**< Requires: lv_bar */
++
++#define LV_USE_SPAN       1
++#if LV_USE_SPAN
++    /** A line of text can contain this maximum number of span descriptors. */
++    #define LV_SPAN_SNIPPET_STACK_SIZE 64
++#endif
++
++#define LV_USE_SPINBOX    1
++
++#define LV_USE_SPINNER    1
++
++#define LV_USE_SWITCH     1
++
++#define LV_USE_TABLE      1
++
++#define LV_USE_TABVIEW    1
++
++#define LV_USE_TEXTAREA   1   /**< Requires: lv_label */
++#if LV_USE_TEXTAREA != 0
++    #define LV_TEXTAREA_DEF_PWD_SHOW_TIME 1500    /**< [ms] */
++#endif
++
++#define LV_USE_TILEVIEW   1
++
++#define LV_USE_WIN        1
++
++#define LV_USE_3DTEXTURE  0
++
++/*==================
++ * THEMES
++ *==================*/
++/* Documentation for themes can be found here: https://docs.lvgl.io/master/common-widget-features/styles/styles.html#themes . */
++
++/** A simple, impressive and very complete theme */
++#define LV_USE_THEME_DEFAULT 1
++#if LV_USE_THEME_DEFAULT
++    /** 0: Light mode; 1: Dark mode */
++    #define LV_THEME_DEFAULT_DARK 0
++
++    /** 1: Enable grow on press */
++    #define LV_THEME_DEFAULT_GROW 1
++
++    /** Default transition time in ms. */
++    #define LV_THEME_DEFAULT_TRANSITION_TIME 80
++#endif /*LV_USE_THEME_DEFAULT*/
++
++/** A very simple theme that is a good starting point for a custom theme */
++#define LV_USE_THEME_SIMPLE 1
++
++/** A theme designed for monochrome displays */
++#define LV_USE_THEME_MONO 1
++
++/*==================
++ * LAYOUTS
++ *==================*/
++/* Documentation for layouts can be found here: https://docs.lvgl.io/master/common-widget-features/layouts/index.html . */
++
++/** A layout similar to Flexbox in CSS. */
++#define LV_USE_FLEX 1
++
++/** A layout similar to Grid in CSS. */
++#define LV_USE_GRID 1
++
++/*====================
++ * 3RD PARTS LIBRARIES
++ *====================*/
++/* Documentation for libraries can be found here: https://docs.lvgl.io/master/libs/index.html . */
++
++/* File system interfaces for common APIs */
++
++/** Setting a default driver letter allows skipping the driver prefix in filepaths.
++ *  Documentation about how to use the below driver-identifier letters can be found at
++ *  https://docs.lvgl.io/master/main-modules/fs.html#lv-fs-identifier-letters . */
++#define LV_FS_DEFAULT_DRIVER_LETTER '\0'
++
++/** API for fopen, fread, etc. */
++#define LV_USE_FS_STDIO 0
++#if LV_USE_FS_STDIO
++    #define LV_FS_STDIO_LETTER '\0'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
++    #define LV_FS_STDIO_PATH ""         /**< Set the working directory. File/directory paths will be appended to it. */
++    #define LV_FS_STDIO_CACHE_SIZE 0    /**< >0 to cache this number of bytes in lv_fs_read() */
++#endif
++
++/** API for open, read, etc. */
++#define LV_USE_FS_POSIX 0
++#if LV_USE_FS_POSIX
++    #define LV_FS_POSIX_LETTER '\0'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
++    #define LV_FS_POSIX_PATH ""         /**< Set the working directory. File/directory paths will be appended to it. */
++    #define LV_FS_POSIX_CACHE_SIZE 0    /**< >0 to cache this number of bytes in lv_fs_read() */
++#endif
++
++/** API for CreateFile, ReadFile, etc. */
++#define LV_USE_FS_WIN32 0
++#if LV_USE_FS_WIN32
++    #define LV_FS_WIN32_LETTER '\0'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
++    #define LV_FS_WIN32_PATH ""         /**< Set the working directory. File/directory paths will be appended to it. */
++    #define LV_FS_WIN32_CACHE_SIZE 0    /**< >0 to cache this number of bytes in lv_fs_read() */
++#endif
++
++/** API for FATFS (needs to be added separately). Uses f_open, f_read, etc. */
++#define LV_USE_FS_FATFS 0
++#if LV_USE_FS_FATFS
++    #define LV_FS_FATFS_LETTER '\0'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
++    #define LV_FS_FATFS_PATH ""         /**< Set the working directory. File/directory paths will be appended to it. */
++    #define LV_FS_FATFS_CACHE_SIZE 0    /**< >0 to cache this number of bytes in lv_fs_read() */
++#endif
++
++/** API for memory-mapped file access. */
++#define LV_USE_FS_MEMFS 0
++#if LV_USE_FS_MEMFS
++    #define LV_FS_MEMFS_LETTER '\0'     /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
++#endif
++
++/** API for LittleFs. */
++#define LV_USE_FS_LITTLEFS 0
++#if LV_USE_FS_LITTLEFS
++    #define LV_FS_LITTLEFS_LETTER '\0'  /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
++    #define LV_FS_LITTLEFS_PATH ""      /**< Set the working directory. File/directory paths will be appended to it. */
++#endif
++
++/** API for Arduino LittleFs. */
++#define LV_USE_FS_ARDUINO_ESP_LITTLEFS 0
++#if LV_USE_FS_ARDUINO_ESP_LITTLEFS
++    #define LV_FS_ARDUINO_ESP_LITTLEFS_LETTER '\0'  /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
++    #define LV_FS_ARDUINO_ESP_LITTLEFS_PATH ""      /**< Set the working directory. File/directory paths will be appended to it. */
++#endif
++
++/** API for Arduino Sd. */
++#define LV_USE_FS_ARDUINO_SD 0
++#if LV_USE_FS_ARDUINO_SD
++    #define LV_FS_ARDUINO_SD_LETTER '\0'  /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
++    #define LV_FS_ARDUINO_SD_PATH ""      /**< Set the working directory. File/directory paths will be appended to it. */
++#endif
++
++/** API for UEFI */
++#define LV_USE_FS_UEFI 0
++#if LV_USE_FS_UEFI
++    #define LV_FS_UEFI_LETTER '\0'      /**< Set an upper-case driver-identifier letter for this driver (e.g. 'A'). */
++#endif
++
++#define LV_USE_FS_FROGFS 0
++#if LV_USE_FS_FROGFS
++    #define LV_FS_FROGFS_LETTER '\0'
++#endif
++
++/** LODEPNG decoder library */
++#define LV_USE_LODEPNG 0
++
++/** PNG decoder(libpng) library */
++#define LV_USE_LIBPNG 0
++
++/** BMP decoder library */
++#define LV_USE_BMP 0
++
++/** JPG + split JPG decoder library.
++ *  Split JPG is a custom format optimized for embedded systems. */
++#define LV_USE_TJPGD 0
++
++/** libjpeg-turbo decoder library.
++ *  - Supports complete JPEG specifications and high-performance JPEG decoding. */
++#define LV_USE_LIBJPEG_TURBO 0
++
++/** WebP decoder library */
++#define LV_USE_LIBWEBP 0
++
++/** GIF decoder library */
++#define LV_USE_GIF 0
++#if LV_USE_GIF
++    /** GIF decoder accelerate */
++    #define LV_GIF_CACHE_DECODE_DATA 0
++#endif
++
++/** GStreamer library */
++#define LV_USE_GSTREAMER 0
++
++/** Decode bin images to RAM */
++#define LV_BIN_DECODER_RAM_LOAD 0
++
++/** RLE decompress library */
++#define LV_USE_RLE 0
++
++/** QR code library */
++#define LV_USE_QRCODE 0
++
++/** Barcode code library */
++#define LV_USE_BARCODE 0
++
++/** FreeType library */
++#define LV_USE_FREETYPE 0
++#if LV_USE_FREETYPE
++    /** Let FreeType use LVGL memory and file porting */
++    #define LV_FREETYPE_USE_LVGL_PORT 0
++
++    /** Cache count of glyphs in FreeType, i.e. number of glyphs that can be cached.
++     *  The higher the value, the more memory will be used. */
++    #define LV_FREETYPE_CACHE_FT_GLYPH_CNT 256
++#endif
++
++/** Built-in TTF decoder */
++#define LV_USE_TINY_TTF 0
++#if LV_USE_TINY_TTF
++    /* Enable loading TTF data from files */
++    #define LV_TINY_TTF_FILE_SUPPORT 0
++    #define LV_TINY_TTF_CACHE_GLYPH_CNT 128
++    #define LV_TINY_TTF_CACHE_KERNING_CNT 256
++#endif
++
++/** Rlottie library */
++#define LV_USE_RLOTTIE 0
++
++/** Requires `LV_USE_3DTEXTURE = 1` */
++#define LV_USE_GLTF  0
++
++/** Enable Vector Graphic APIs
++ *  Requires `LV_USE_MATRIX = 1`
++ *  and a rendering engine supporting vector graphics, e.g.
++ *  (LV_USE_DRAW_SW and LV_USE_THORVG) or LV_USE_DRAW_VG_LITE or LV_USE_NEMA_VG. */
++#define LV_USE_VECTOR_GRAPHIC  0
++
++/** Enable ThorVG (vector graphics library) from the src/libs folder.
++ *  Requires LV_USE_VECTOR_GRAPHIC */
++#define LV_USE_THORVG_INTERNAL 0
++
++/** Enable ThorVG by assuming that its installed and linked to the project
++ *  Requires LV_USE_VECTOR_GRAPHIC */
++#define LV_USE_THORVG_EXTERNAL 0
++
++/** Enable NanoVG (vector graphics library) */
++#define LV_USE_NANOVG 0
++
++/** Use lvgl built-in LZ4 lib */
++#define LV_USE_LZ4_INTERNAL  0
++
++/** Use external LZ4 library */
++#define LV_USE_LZ4_EXTERNAL  0
++
++/*SVG library
++ *  - Requires `LV_USE_VECTOR_GRAPHIC = 1` */
++#define LV_USE_SVG 0
++#define LV_USE_SVG_ANIMATION 0
++#define LV_USE_SVG_DEBUG 0
++
++/** FFmpeg library for image decoding and playing videos.
++ *  Supports all major image formats so do not enable other image decoder with it. */
++#define LV_USE_FFMPEG 0
++#if LV_USE_FFMPEG
++    /** Dump input information to stderr */
++    #define LV_FFMPEG_DUMP_FORMAT 0
++    /** Use lvgl file path in FFmpeg Player widget
++     *  You won't be able to open URLs after enabling this feature.
++     *  Note that FFmpeg image decoder will always use lvgl file system. */
++    #define LV_FFMPEG_PLAYER_USE_LV_FS 0
++#endif
++
++/*==================
++ * OTHERS
++ *==================*/
++/* Documentation for several of the below items can be found here: https://docs.lvgl.io/master/auxiliary-modules/index.html . */
++
++/** 1: Enable API to take snapshot for object */
++#define LV_USE_SNAPSHOT 0
++
++/** 1: Enable system monitor component */
++#define LV_USE_SYSMON   0
++#if LV_USE_SYSMON
++    /** Get the idle percentage. E.g. uint32_t my_get_idle(void); */
++    #define LV_SYSMON_GET_IDLE lv_os_get_idle_percent
++    /** 1: Enable usage of lv_os_get_proc_idle_percent.*/
++    #define LV_SYSMON_PROC_IDLE_AVAILABLE 0
++    #if LV_SYSMON_PROC_IDLE_AVAILABLE
++        /** Get the applications idle percentage.
++         * - Requires `LV_USE_OS == LV_OS_PTHREAD` */
++        #define LV_SYSMON_GET_PROC_IDLE lv_os_get_proc_idle_percent
++    #endif
++
++    /** 1: Show CPU usage and FPS count.
++     *  - Requires `LV_USE_SYSMON = 1` */
++    #define LV_USE_PERF_MONITOR 0
++    #if LV_USE_PERF_MONITOR
++        #define LV_USE_PERF_MONITOR_POS LV_ALIGN_BOTTOM_RIGHT
++
++        /** 0: Displays performance data on the screen; 1: Prints performance data using log. */
++        #define LV_USE_PERF_MONITOR_LOG_MODE 0
++    #endif
++
++    /** 1: Show used memory and memory fragmentation.
++     *     - Requires `LV_USE_STDLIB_MALLOC = LV_STDLIB_BUILTIN`
++     *     - Requires `LV_USE_SYSMON = 1`*/
++    #define LV_USE_MEM_MONITOR 0
++    #if LV_USE_MEM_MONITOR
++        #define LV_USE_MEM_MONITOR_POS LV_ALIGN_BOTTOM_LEFT
++    #endif
++#endif /*LV_USE_SYSMON*/
++
++/** 1: Enable runtime performance profiler */
++#define LV_USE_PROFILER 0
++#if LV_USE_PROFILER
++    /** 1: Enable the built-in profiler */
++    #define LV_USE_PROFILER_BUILTIN 1
++    #if LV_USE_PROFILER_BUILTIN
++        /** Default profiler trace buffer size */
++        #define LV_PROFILER_BUILTIN_BUF_SIZE (16 * 1024)     /**< [bytes] */
++        #define LV_PROFILER_BUILTIN_DEFAULT_ENABLE 1
++        #define LV_USE_PROFILER_BUILTIN_POSIX 0 /**< Enable POSIX profiler port */
++    #endif
++
++    /** Header to include for profiler */
++    #define LV_PROFILER_INCLUDE "lvgl/src/misc/lv_profiler_builtin.h"
++
++    /** Profiler start point function */
++    #define LV_PROFILER_BEGIN    LV_PROFILER_BUILTIN_BEGIN
++
++    /** Profiler end point function */
++    #define LV_PROFILER_END      LV_PROFILER_BUILTIN_END
++
++    /** Profiler start point function with custom tag */
++    #define LV_PROFILER_BEGIN_TAG LV_PROFILER_BUILTIN_BEGIN_TAG
++
++    /** Profiler end point function with custom tag */
++    #define LV_PROFILER_END_TAG   LV_PROFILER_BUILTIN_END_TAG
++
++    /*Enable layout profiler*/
++    #define LV_PROFILER_LAYOUT 1
++
++    /*Enable disp refr profiler*/
++    #define LV_PROFILER_REFR 1
++
++    /*Enable draw profiler*/
++    #define LV_PROFILER_DRAW 1
++
++    /*Enable indev profiler*/
++    #define LV_PROFILER_INDEV 1
++
++    /*Enable decoder profiler*/
++    #define LV_PROFILER_DECODER 1
++
++    /*Enable font profiler*/
++    #define LV_PROFILER_FONT 1
++
++    /*Enable fs profiler*/
++    #define LV_PROFILER_FS 1
++
++    /*Enable style profiler*/
++    #define LV_PROFILER_STYLE 0
++
++    /*Enable timer profiler*/
++    #define LV_PROFILER_TIMER 1
++
++    /*Enable cache profiler*/
++    #define LV_PROFILER_CACHE 1
++
++    /*Enable event profiler*/
++    #define LV_PROFILER_EVENT 1
++#endif
++
++/** 1: Enable Monkey test */
++#define LV_USE_MONKEY 0
++
++/** 1: Enable grid navigation */
++#define LV_USE_GRIDNAV 0
++
++/** 1: Enable `lv_obj` fragment logic */
++#define LV_USE_FRAGMENT 0
++
++/** 1: Support using images as font in label or span widgets */
++#define LV_USE_IMGFONT 0
++
++/** 1: Enable an observer pattern implementation */
++#define LV_USE_OBSERVER 1
++
++/** 1: Enable Pinyin input method
++ *  - Requires: lv_keyboard */
++#define LV_USE_IME_PINYIN 0
++#if LV_USE_IME_PINYIN
++    /** 1: Use default thesaurus.
++     *  @note  If you do not use the default thesaurus, be sure to use `lv_ime_pinyin` after setting the thesaurus. */
++    #define LV_IME_PINYIN_USE_DEFAULT_DICT 1
++    /** Set maximum number of candidate panels that can be displayed.
++     *  @note  This needs to be adjusted according to size of screen. */
++    #define LV_IME_PINYIN_CAND_TEXT_NUM 6
++
++    /** Use 9-key input (k9). */
++    #define LV_IME_PINYIN_USE_K9_MODE      1
++    #if LV_IME_PINYIN_USE_K9_MODE == 1
++        #define LV_IME_PINYIN_K9_CAND_TEXT_NUM 3
++    #endif /*LV_IME_PINYIN_USE_K9_MODE*/
++#endif
++
++/** 1: Enable file explorer.
++ *  - Requires: lv_table */
++#define LV_USE_FILE_EXPLORER                     0
++#if LV_USE_FILE_EXPLORER
++    /** Maximum length of path */
++    #define LV_FILE_EXPLORER_PATH_MAX_LEN        (128)
++    /** Quick access bar, 1:use, 0:do not use.
++     *  - Requires: lv_list */
++    #define LV_FILE_EXPLORER_QUICK_ACCESS        1
++#endif
++
++/** 1: Enable Font manager */
++#define LV_USE_FONT_MANAGER                     0
++#if LV_USE_FONT_MANAGER
++
++/**Font manager name max length*/
++#define LV_FONT_MANAGER_NAME_MAX_LEN            32
++
++#endif
++
++/** Enable emulated input devices, time emulation, and screenshot compares. */
++#define LV_USE_TEST 0
++#if LV_USE_TEST
++
++/** Enable `lv_test_screenshot_compare`.
++ * Requires lodepng and a few MB of extra RAM. */
++#define LV_USE_TEST_SCREENSHOT_COMPARE 0
++
++#if LV_USE_TEST_SCREENSHOT_COMPARE
++    /** 1: Automatically create missing reference images*/
++    #define LV_TEST_SCREENSHOT_CREATE_REFERENCE_IMAGE 1
++#endif /*LV_USE_TEST_SCREENSHOT_COMPARE*/
++
++#endif /*LV_USE_TEST*/
++
++/** 1: Enable text translation support */
++#define LV_USE_TRANSLATION 0
++
++/*1: Enable color filter style*/
++#define LV_USE_COLOR_FILTER     0
++
++/*==================
++ * DEVICES
++ *==================*/
++
++/** Use SDL to open window on PC and handle mouse and keyboard. */
++#define LV_USE_SDL              0
++#if LV_USE_SDL
++    #define LV_SDL_INCLUDE_PATH     <SDL2/SDL.h>
++    #define LV_SDL_RENDER_MODE      LV_DISPLAY_RENDER_MODE_DIRECT   /**< LV_DISPLAY_RENDER_MODE_DIRECT is recommended for best performance */
++    #define LV_SDL_BUF_COUNT        1    /**< 1 or 2 */
++    #define LV_SDL_ACCELERATED      1    /**< 1: Use hardware acceleration*/
++    #define LV_SDL_FULLSCREEN       0    /**< 1: Make the window full screen by default */
++    #define LV_SDL_DIRECT_EXIT      1    /**< 1: Exit the application when all SDL windows are closed */
++    #define LV_SDL_MOUSEWHEEL_MODE  LV_SDL_MOUSEWHEEL_MODE_ENCODER  /*LV_SDL_MOUSEWHEEL_MODE_ENCODER/CROWN*/
++#endif
++
++/** Use X11 to open window on Linux desktop and handle mouse and keyboard */
++#define LV_USE_X11              0
++#if LV_USE_X11
++    #define LV_X11_DIRECT_EXIT         1  /**< Exit application when all X11 windows have been closed */
++    #define LV_X11_DOUBLE_BUFFER       1  /**< Use double buffers for rendering */
++    /* Select only 1 of the following render modes (LV_X11_RENDER_MODE_PARTIAL preferred!). */
++    #define LV_X11_RENDER_MODE_PARTIAL 1  /**< Partial render mode (preferred) */
++    #define LV_X11_RENDER_MODE_DIRECT  0  /**< Direct render mode */
++    #define LV_X11_RENDER_MODE_FULL    0  /**< Full render mode */
++#endif
++
++/** Use Wayland to open a window and handle input on Linux or BSD desktops */
++#define LV_USE_WAYLAND          0
++#if LV_USE_WAYLAND
++    #define LV_WAYLAND_DIRECT_EXIT          1     /**< 1: Exit the application when all Wayland windows are closed */
++#endif
++
++/** Driver for /dev/fb */
++#define LV_USE_LINUX_FBDEV      0
++#if LV_USE_LINUX_FBDEV
++    #define LV_LINUX_FBDEV_BSD           0
++    #define LV_LINUX_FBDEV_RENDER_MODE   LV_DISPLAY_RENDER_MODE_PARTIAL
++    #define LV_LINUX_FBDEV_BUFFER_COUNT  0
++    #define LV_LINUX_FBDEV_BUFFER_SIZE   60
++    #define LV_LINUX_FBDEV_MMAP          1
++#endif
++
++/** Use Nuttx to open window and handle touchscreen */
++#define LV_USE_NUTTX    0
++
++#if LV_USE_NUTTX
++    #define LV_USE_NUTTX_INDEPENDENT_IMAGE_HEAP 0
++
++    /** Use independent image heap for default draw buffer */
++    #define LV_NUTTX_DEFAULT_DRAW_BUF_USE_INDEPENDENT_IMAGE_HEAP    0
++
++    #define LV_USE_NUTTX_LIBUV    0
++
++    /** Use Nuttx custom init API to open window and handle touchscreen */
++    #define LV_USE_NUTTX_CUSTOM_INIT    0
++
++    /** Driver for /dev/lcd */
++    #define LV_USE_NUTTX_LCD      0
++    #if LV_USE_NUTTX_LCD
++        #define LV_NUTTX_LCD_BUFFER_COUNT    0
++        #define LV_NUTTX_LCD_BUFFER_SIZE     60
++    #endif
++
++    /** Driver for /dev/input */
++    #define LV_USE_NUTTX_TOUCHSCREEN    0
++
++    /** Touchscreen cursor size in pixels(<=0: disable cursor) */
++    #define LV_NUTTX_TOUCHSCREEN_CURSOR_SIZE    0
++
++    /** Driver for /dev/mouse */
++    #define LV_USE_NUTTX_MOUSE    0
++
++    /** Mouse movement step (pixels) */
++    #define LV_USE_NUTTX_MOUSE_MOVE_STEP    1
++
++    /*NuttX trace file and its path*/
++    #define LV_USE_NUTTX_TRACE_FILE 0
++    #if LV_USE_NUTTX_TRACE_FILE
++        #define LV_NUTTX_TRACE_FILE_PATH "/data/lvgl-trace.log"
++    #endif
++
++#endif
++
++/** Driver for /dev/dri/card */
++#define LV_USE_LINUX_DRM        0
++
++#if LV_USE_LINUX_DRM
++
++    /* Use the MESA GBM library to allocate DMA buffers that can be
++     * shared across sub-systems and libraries using the Linux DMA-BUF API.
++     * The GBM library aims to provide a platform independent memory management system
++     * it supports the major GPU vendors - This option requires linking with libgbm */
++    #define LV_USE_LINUX_DRM_GBM_BUFFERS 0
++#endif
++
++/** Interface for TFT_eSPI */
++#define LV_USE_TFT_ESPI         0
++
++/** Interface for Lovyan_GFX */
++#define LV_USE_LOVYAN_GFX         0
++
++#if LV_USE_LOVYAN_GFX
++    #define LV_LGFX_USER_INCLUDE "lv_lgfx_user.hpp"
++
++#endif /*LV_USE_LOVYAN_GFX*/
++
++/** Driver for evdev input devices */
++#define LV_USE_EVDEV    0
++
++/** Driver for libinput input devices */
++#define LV_USE_LIBINPUT    0
++
++#if LV_USE_LIBINPUT
++    #define LV_LIBINPUT_BSD    0
++
++    /** Full keyboard support */
++    #define LV_LIBINPUT_XKB             0
++    #if LV_LIBINPUT_XKB
++        /** "setxkbmap -query" can help find the right values for your keyboard */
++        #define LV_LIBINPUT_XKB_KEY_MAP { .rules = NULL, .model = "pc101", .layout = "us", .variant = NULL, .options = NULL }
++    #endif
++#endif
++
++/* Drivers for LCD devices connected via SPI/parallel port */
++#define LV_USE_ST7735        0
++#define LV_USE_ST7789        0
++#define LV_USE_ST7796        0
++#define LV_USE_ILI9341       0
++#define LV_USE_FT81X         0
++#define LV_USE_NV3007        0
++
++#if (LV_USE_ST7735 | LV_USE_ST7789 | LV_USE_ST7796 | LV_USE_ILI9341 | LV_USE_NV3007)
++    #define LV_USE_GENERIC_MIPI 1
++#else
++    #define LV_USE_GENERIC_MIPI 0
++#endif
++
++/** Driver for Renesas GLCD */
++#define LV_USE_RENESAS_GLCDC    0
++
++/** Driver for ST LTDC */
++#define LV_USE_ST_LTDC    0
++#if LV_USE_ST_LTDC
++    /* Only used for partial. */
++    #define LV_ST_LTDC_USE_DMA2D_FLUSH 0
++#endif
++
++/** Driver for NXP ELCDIF */
++#define LV_USE_NXP_ELCDIF   0
++
++/** LVGL Windows backend */
++#define LV_USE_WINDOWS    0
++
++/** LVGL UEFI backend */
++#define LV_USE_UEFI 0
++#if LV_USE_UEFI
++    #define LV_USE_UEFI_INCLUDE "myefi.h"   /**< Header that hides the actual framework (EDK2, gnu-efi, ...) */
++    #define LV_UEFI_USE_MEMORY_SERVICES 0   /**< Use the memory functions from the boot services table */
++#endif
++
++/** Use a generic OpenGL driver that can be used to embed in other applications or used with GLFW/EGL
++ * - Requires LV_USE_MATRIX.
++ */
++#define LV_USE_OPENGLES   0
++#if LV_USE_OPENGLES
++    #define LV_USE_OPENGLES_DEBUG        1    /**< Enable or disable debug for opengles */
++#endif
++
++/** Use GLFW to open window on PC and handle mouse and keyboard. Requires*/
++#define LV_USE_GLFW   0
++
++
++/** QNX Screen display and input drivers */
++#define LV_USE_QNX              0
++#if LV_USE_QNX
++    #define LV_QNX_BUF_COUNT        1    /**< 1 or 2 */
++#endif
++
++/** Enable or disable for external data and destructor function */
++#define LV_USE_EXT_DATA   0
++
++/*=====================
++* BUILD OPTIONS
++*======================*/
++
++/** Enable examples to be built with the library. */
++#define LV_BUILD_EXAMPLES 1
++
++/** Build the demos */
++#define LV_BUILD_DEMOS 1
++
++/*===================
++ * DEMO USAGE
++ ====================*/
++
++#if LV_BUILD_DEMOS
++    /** Show some widgets. This might be required to increase `LV_MEM_SIZE`. */
++    #define LV_USE_DEMO_WIDGETS 0
++
++    /** Demonstrate usage of encoder and keyboard. */
++    #define LV_USE_DEMO_KEYPAD_AND_ENCODER 0
++
++    /** Benchmark your system */
++    #define LV_USE_DEMO_BENCHMARK 0
++
++    #if LV_USE_DEMO_BENCHMARK
++        /** Use fonts where bitmaps are aligned 16 byte and has Nx16 byte stride */
++        #define LV_DEMO_BENCHMARK_ALIGNED_FONTS 0
++    #endif
++
++    /** Render test for each primitive.
++     *  - Requires at least 480x272 display. */
++    #define LV_USE_DEMO_RENDER 0
++
++    /** Stress test for LVGL */
++    #define LV_USE_DEMO_STRESS 0
++
++    /** Music player demo */
++    #define LV_USE_DEMO_MUSIC 0
++    #if LV_USE_DEMO_MUSIC
++        #define LV_DEMO_MUSIC_SQUARE    0
++        #define LV_DEMO_MUSIC_LANDSCAPE 0
++        #define LV_DEMO_MUSIC_ROUND     0
++        #define LV_DEMO_MUSIC_LARGE     0
++        #define LV_DEMO_MUSIC_AUTO_PLAY 0
++    #endif
++
++    /** Vector graphic demo */
++    #define LV_USE_DEMO_VECTOR_GRAPHIC  0
++
++    /** GLTF demo */
++    #define LV_USE_DEMO_GLTF            0
++
++    /*---------------------------
++     * Demos from lvgl/lv_demos
++      ---------------------------*/
++
++    /** Flex layout demo */
++    #define LV_USE_DEMO_FLEX_LAYOUT     0
++
++    /** Smart-phone like multi-language demo */
++    #define LV_USE_DEMO_MULTILANG       0
++
++    /*E-bike demo with Lottie animations (if LV_USE_LOTTIE is enabled)*/
++    #define LV_USE_DEMO_EBIKE           0
++    #if LV_USE_DEMO_EBIKE
++        #define LV_DEMO_EBIKE_PORTRAIT  0    /*0: for 480x270..480x320, 1: for 480x800..720x1280*/
++    #endif
++
++    /** High-resolution demo */
++    #define LV_USE_DEMO_HIGH_RES        0
++
++    /* Smart watch demo */
++    #define LV_USE_DEMO_SMARTWATCH      0
++#endif /* LV_BUILD_DEMOS */
++
++/*--END OF LV_CONF_H--*/
++
++#endif /*LV_CONF_H*/
++
++#endif /*End of "Content enable"*/
+diff -ruN '--exclude=out' a/sim/face/main.cc b/sim/face/main.cc
+--- a/sim/face/main.cc	1969-12-31 18:00:00.000000000 -0600
++++ b/sim/face/main.cc	2026-10-15 16:16:08.119756022 -0500
+@@ -0,0 +1,80 @@
++// Headless LVGL simulator for the Tamagroki face. Renders each animation state
++// to PPM frames (converted to PNG/GIF by render.py). No SDL needed.
++#include <lvgl.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <string>
++#include <vector>
++#include <math.h>
++#include "grok_face.h"
++
++static const int W = 480, H = 480;
++static std::vector<uint8_t> fb(W * H * 4);
++static uint32_t g_now = 0;
++static uint32_t tick_cb() { return g_now; }
++
++static void flush_cb(lv_display_t* d, const lv_area_t* a, uint8_t* px) {
++    int w = lv_area_get_width(a);
++    for (int y = a->y1; y <= a->y2; y++)
++        memcpy(&fb[(y * W + a->x1) * 4], px + (y - a->y1) * w * 4, w * 4);
++    lv_display_flush_ready(d);
++}
++
++static void save_ppm(const std::string& path) {
++    FILE* f = fopen(path.c_str(), "wb");
++    fprintf(f, "P6\n%d %d\n255\n", W, H);
++    for (int i = 0; i < W * H; i++) { // XRGB8888 little-endian: B G R A
++        uint8_t rgb[3] = {fb[i * 4 + 2], fb[i * 4 + 1], fb[i * 4 + 0]};
++        fwrite(rgb, 1, 3, f);
++    }
++    fclose(f);
++}
++
++int main(int argc, char** argv) {
++    const char* out = argc > 1 ? argv[1] : "out";
++    uint32_t bg = argc > 2 ? strtoul(argv[2], nullptr, 16) : 0x9B7FE0;
++    lv_init();
++    lv_tick_set_cb(tick_cb);
++    lv_display_t* disp = lv_display_create(W, H);
++    static std::vector<uint8_t> buf(W * H * 4);
++    lv_display_set_buffers(disp, buf.data(), nullptr, buf.size(), LV_DISPLAY_RENDER_MODE_PARTIAL);
++    lv_display_set_flush_cb(disp, flush_cb);
++
++    FaceConfig cfg;
++    cfg.bg_color = bg;
++    GrokFace face;
++    face.Create(lv_screen_active(), W, H, cfg);
++
++    struct Seg { FaceState s; int ms; };
++    // a scripted "conversation" timeline
++    std::vector<Seg> script = {
++        {FaceState::kIdle, 7000}, {FaceState::kListening, 2500}, {FaceState::kThinking, 2500},
++        {FaceState::kSpeaking, 4000}, {FaceState::kIdle, 1500}, {FaceState::kSleep, 4000},
++    };
++    const int frame_ms = 40;  // 25 fps
++    int frame = 0;
++    char path[512];
++    FILE* index = fopen((std::string(out) + "/frames.csv").c_str(), "w");
++    for (auto& seg : script) {
++        face.SetState(seg.s, g_now);
++        for (int t = 0; t < seg.ms; t += frame_ms, g_now += frame_ms) {
++            if (seg.s == FaceState::kSpeaking) {
++                // fake syllable envelope ~ 4-6 Hz
++                float x = g_now / 1000.0f;
++                float lvl = fabsf(sinf(x * 13.f)) * (0.55f + 0.45f * sinf(x * 2.3f));
++                face.SetAudioLevel(lvl);
++            }
++            face.Tick(g_now);
++            lv_timer_handler();
++            lv_refr_now(disp);
++            snprintf(path, sizeof(path), "%s/f%05d.ppm", out, frame);
++            save_ppm(path);
++            fprintf(index, "%d,%s,%u\n", frame, FaceStateName(seg.s), g_now);
++            frame++;
++        }
++    }
++    fclose(index);
++    printf("rendered %d frames to %s\n", frame, out);
++    return 0;
++}
+diff -ruN '--exclude=out' a/sim/face/render.py b/sim/face/render.py
+--- a/sim/face/render.py	1969-12-31 18:00:00.000000000 -0600
++++ b/sim/face/render.py	2026-10-15 16:16:08.123756022 -0500
+@@ -0,0 +1,44 @@
++#!/usr/bin/env python3
++"""Build + run the headless face simulator and produce PNG/GIF previews.
++Usage: python3 sim/face/render.py [--bg 9B7FE0] [--out sim/face/out]"""
++import argparse, csv, os, subprocess, sys, tempfile, glob
++from PIL import Image
++
++here = os.path.dirname(os.path.abspath(__file__))
++ap = argparse.ArgumentParser()
++ap.add_argument("--bg", default="9B7FE0")
++ap.add_argument("--out", default=os.path.join(here, "out"))
++ap.add_argument("--build", default="/tmp/grokface_simbuild")
++a = ap.parse_args()
++
++subprocess.check_call(["cmake", "-S", here, "-B", a.build, "-DCMAKE_BUILD_TYPE=Release"], stdout=subprocess.DEVNULL)
++subprocess.check_call(["cmake", "--build", a.build, "-j8"], stdout=subprocess.DEVNULL)
++os.makedirs(a.out, exist_ok=True)
++with tempfile.TemporaryDirectory() as tmp:
++    subprocess.check_call([os.path.join(a.build, "grokface_sim"), tmp, a.bg])
++    rows = list(csv.reader(open(os.path.join(tmp, "frames.csv"))))
++    by_state = {}
++    for fr, st, _ in rows:
++        by_state.setdefault(st, []).append(int(fr))
++    img = lambda i: Image.open(os.path.join(tmp, f"f{i:05d}.ppm")).convert("RGB")
++    stills = []
++    for st, frames in by_state.items():
++        blk = lambda i: sum(1 for p in img(i).resize((96, 96)).get_flattened_data() if p[0] < 40)
++        cand = frames[len(frames) // 3:]
++        pick = cand[-1] if st == "sleep" else max(cand[::3], key=blk)  # skip blink frames
++        im = img(pick); im.save(os.path.join(a.out, f"{st}.png")); stills.append((st, im))
++        seq = [img(i).resize((240, 240), Image.LANCZOS) for i in frames]
++        seq[0].save(os.path.join(a.out, f"{st}.gif"), save_all=True, append_images=seq[1:], duration=40, loop=0)
++    all_frames = [img(int(r[0])).resize((240, 240), Image.LANCZOS) for r in rows]
++    all_frames[0].save(os.path.join(a.out, "timeline.gif"), save_all=True, append_images=all_frames[1:], duration=40, loop=0)
++    # blink still: find the most-closed frame in idle by counting black pixels
++    idle = by_state["idle"]
++    blackest = min(idle, key=lambda i: sum(1 for p in img(i).resize((96, 96)).get_flattened_data() if p[0] < 40))
++    img(blackest).save(os.path.join(a.out, "idle_blink.png"))
++    sheet = Image.new("RGB", (240 * len(stills), 260), "white")
++    from PIL import ImageDraw
++    d = ImageDraw.Draw(sheet)
++    for k, (st, im) in enumerate(stills):
++        sheet.paste(im.resize((240, 240), Image.LANCZOS), (240 * k, 20)); d.text((240 * k + 8, 4), st, fill="black")
++    sheet.save(os.path.join(a.out, "contact_sheet.png"))
++print("wrote", sorted(os.path.basename(p) for p in glob.glob(os.path.join(a.out, "*"))))
+diff -ruN '--exclude=out' a/tamagroki/sdkconfig.tamagroki b/tamagroki/sdkconfig.tamagroki
+--- a/tamagroki/sdkconfig.tamagroki	1969-12-31 18:00:00.000000000 -0600
++++ b/tamagroki/sdkconfig.tamagroki	2026-10-15 16:16:08.123756022 -0500
+@@ -0,0 +1,36 @@
++# Tamagroki cube build preset (Waveshare ESP32-S3-Touch-AMOLED-2.16)
++# Applied on top of sdkconfig.defaults + sdkconfig.defaults.esp32s3 by ./build.sh
++CONFIG_BOARD_TYPE_WAVESHARE_ESP32_S3_TOUCH_AMOLED_2_16=y
++CONFIG_USE_WECHAT_MESSAGE_STYLE=n
++CONFIG_USE_DEVICE_AEC=y
++CONFIG_LANGUAGE_EN_US=y
++
++# --- Relay / server -------------------------------------------------------
++# The relay (relay/) serves the xiaozhi OTA endpoint and hands back its websocket URL.
++# build.sh overrides this from $TAMAGROKI_RELAY_URL (default: http://tamagroki-relay.local:8765/xiaozhi/ota/)
++CONFIG_OTA_URL="http://tamagroki-relay.local:8765/xiaozhi/ota/"
++
++# --- Wake word: "Yo Grok" via ESP-SR MultiNet custom command ----------------
++# ";"-separated phrases, all mapped to wake ("yo grog" catches a common mishearing)
++CONFIG_WAKE_WORD_DISABLED=n
++CONFIG_USE_ESP_WAKE_WORD=n
++CONFIG_USE_AFE_WAKE_WORD=n
++CONFIG_USE_CUSTOM_WAKE_WORD=y
++CONFIG_CUSTOM_WAKE_WORD="yo grok;yo grog;yoh grok;yo grawk"
++CONFIG_CUSTOM_WAKE_WORD_DISPLAY="Yo Grok"
++CONFIG_CUSTOM_WAKE_WORD_THRESHOLD=13
++CONFIG_CUSTOM_WAKE_WORD_SW_GAIN=3
++CONFIG_SR_MN_EN_MULTINET7_QUANT=y
++CONFIG_SR_MN_CN_NONE=y
++# barge-in by wake word while the bot is talking
++CONFIG_WAKE_WORD_DETECTION_IN_LISTENING=y
++
++# --- Tamagroki face -----------------------------------------------------------
++CONFIG_TAMAGROKI_FACE=y
++CONFIG_TAMAGROKI_NAME="Tamagroki"
++CONFIG_TAMAGROKI_BG_COLOR=0x9B7FE0
++CONFIG_TAMAGROKI_EYE_TILT_DEG=12
++CONFIG_TAMAGROKI_SHOW_SUBTITLES=n
++CONFIG_TAMAGROKI_IMU_WAKE=n
++CONFIG_TAMAGROKI_IMU_THRESHOLD_MG=350
++CONFIG_LV_FONT_MONTSERRAT_24=y
+diff -ruN '--exclude=out' a/test.sh b/test.sh
+--- a/test.sh	1969-12-31 18:00:00.000000000 -0600
++++ b/test.sh	2026-10-15 16:16:08.119756022 -0500
+@@ -0,0 +1,10 @@
++#!/usr/bin/env bash
++# Desktop tests: ../relay (mock device + mock xAI) and the face simulator.
++set -euo pipefail
++cd "$(dirname "$0")"
++( cd ../relay && { [ -d .venv ] || { python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt; }; } && .venv/bin/python -m pytest -q )
++if [ -d "${LVGL_DIR:-../lvgl-sim}" ]; then
++  ../relay/.venv/bin/pip install -q pillow && ../relay/.venv/bin/python sim/face/render.py
++else
++  echo "face sim skipped: git clone -b release/v9.5 --depth 1 https://github.com/lvgl/lvgl.git ../lvgl-sim (or set LVGL_DIR)"
++fi

@@ -1,0 +1,28 @@
+# Tamagroki cube v0.5 
+Fixes the v0.3b/c bug: the corner screw bosses sat behind the case and blocked the back opening. The v0.5 sleeve has nothing between the back opening (Y=23.31) and the front lip. The stock case slides in from the back.
+Dims carried over from v0.3b: case 46x46x22.5 R5.8, 0.3 clearance, 2.5 walls, 51.6 outer, lip 0.8, window 43.5 R4.8, buttons x=-10/0/10 at 9.91 behind the face (pin pockets), USB-C recess at 8.93, grille slots on +X, mic holes on both sides (seal rings cut to 0.15 so they stay out of the insertion path), 803040 LiPo behind the case.
+NEW: three 6.0 wide grooves in the top inner wall run from the back opening to the button pockets, so the proud button caps (0.97) can slide in.
+Parts: sleeve (front 0..23.31), back_cover (23.31..34.81, back fillet R3), button_pin_x3, case_back_replacement (unchanged; verify it against the stock part).
+Retention: the cover has 4 diamond-section corner press posts at (+-18.5,+-18.5) that stop 0.1 behind the case back. It also has 2 snap arms on the left and right walls, in the z -16.5..-9 band, clear of the grille (|z|<5.6) and the mics (z=+13). Each arm is L13 x t1.4 x w7.5 and sits flush in a recessed channel (0.2 under the arm, 0.3 at the sides). Its hook is 0.9 deep with a 0.7 overlap on a 0.9 channel floor, has a 1.2 lead-in ramp, and engages a window in the channel floor with 0.15 axial play. A 2 mm fingernail recess ahead of each arm tip is the release: lift the tip outward. The cradle has X stops, floor ribs, 45-degree top gussets and the wire route at x~+14 to the bottom of the case.
+Assembly: hold the 3 button pins up (tape over the top) → slide the case in from the back → put the LiPo in the cover → snap the cover on.
+Verification (cube_v05.py prints it):
+- Final position: case∩sleeve, case∩cover, battery∩cover, sleeve∩cover, pins∩sleeve, pins∩case all 0.0000 mm3. Posts-to-case gap 0.10, battery gap 0.30.
+- Case insertion sweep +Y: 48 steps of 0.5 mm, offset 23.5 → 0. Max intersection 0.000000 mm3. Control: the same test on the v0.3b front shell gives 397 mm3.
+- Cover sweep (hooks excluded): 29 steps, offset 14 → 0. Max 0 against the sleeve and 0 against the seated case. Hook deflection is 0.7 mm from offset 11.5 to 0.5 and 0 when seated. Estimated strain is 0.87% (PLA ok).
+Print: print/tamagroki_v05r2_sleeve_and_back.gcode.3mf, X1C, Textured PEI, 0.12 layers, 0.2 first layer at 30 mm/s, 5 mm brim, bed 65/60, 3 walls, 15% infill, tree supports on the build plate only. Time 1h44m, 35.8 g. The sleeve prints face down. The cover stands on its bottom face so the arms lie in-layer; small tree supports go under the arm edges and posts. Choose AMS A3 (index 2) at print start.
+
+## r2 (lip fix, after the v0.3c print had a ragged rim)
+- The lip is 1.64 thick (0.2 first layer + 12 x 0.12). The window is 41.8 square with R4.0, which gives a 2.4 mm ring ((46.6-41.8)/2). That is about 5.7 lines at 0.42. It still clears the 38.99 active area by 1.4 per side. The outside edge has a 0.6x45° chamfer, so the opening at the face is 43.0.
+- The case front is now at Y=1.64, a shift of +1.33 mm. That is more than the 0.84 of added lip, because the case's 43.3 front step can no longer sit inside the smaller window: the case now rests flat on the back of the lip. Everything moves with the case (buttons 11.24, USB, grille, mics, latches, cover). Depth goes from 34.81 to 36.14 (YS 24.64).
+- The re-run checks are all 0 (same numbers as before). The v0.3b control still gives 397 mm3.
+- Slicer: arachne walls, detect_thin_wall on, first layer line width 0.42, first-layer walls at 20 mm/s and infill at 30, no ironing. 1h54m, 36.9 g.
+
+## r3 (front sleeve only: hide the panel's black border)
+- Problem (r2 print photo): the 41.8 R4.0 window left a ~1.4 mm black ring per side, which is the panel border between the 38.99 active area and the 43.3 glass edge.
+- Panel geometry comes from Waveshare's DXF (ESP32-S3-Touch-AMOLED-2.16-20260209.dxf, not included): VA 38.99 ±0.10 square, centred in the 43.30 R4.70 glass (2.155 border). The VA corners are continuous-curvature splines, not circular arcs: a 7.75 tangent run and a 2.51 diagonal inset, equivalent to about R6.07. The corner curve is saved in _va_corner.json. The glass front protrudes 0.49 in front of the 46 frame (side views), which matches _ref_case.stl.
+- Window: the VA outline offset 0.30 inward along its normal (checked 0.299-0.300 everywhere, corners included). It is 38.39 square with the same squircle corners (7.45 tangent run, 2.38 diagonal inset, about R5.76 equivalent). That leaves 0.20 of margin after the ±0.10 VA tolerance.
+- Lip: still 1.64 thick, and the case/cy0 position is unchanged. The narrowest section is a 0.64 land on the lip's back face, which sits flat on the glass: 0 gap, no dark well. It opens toward the face through a 1.0x45° outward chamfer, so the face opening is 40.39. The ring at the glass is (46.6-38.39)/2 = 4.1 (about 9-10 lines). The 45° chamfer prints face-down without trouble.
+- Unchanged: everything behind Y=1.64 (section areas checked every 0.5 mm against r2, identical), plus the insertion path, latches and back cover. The back cover doesn't need reprinting.
+- Checks (cube_v05r3.py): all FINAL intersections 0.0000. Case sweep 48 steps max 0. Cover sweep 29 steps max 0. Hook deflection 0.70 mm, strain 0.87%.
+- Files: cube_v05r3.py, sleeve_r3.stl/.step, sleeve_r3_printorient.stl, render_r3.py, view_r3_front_3q.png, view_r3_front.png, view_r3_front_angle35.png, view_r3_section_lip.png.
+- Print: print/tamagroki_v05r3_front_sleeve.gcode.3mf, the sleeve alone, face down. X1C with r2 settings (project config identical). 205 layers, 41m (40m58s), 15.08 g. Choose AMS A3 (index 2) at print start.

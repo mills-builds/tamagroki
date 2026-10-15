@@ -1,0 +1,22 @@
+# secrets
+.env
+*.env
+!.env.example
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# firmware build outputs
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/tamagroki/sdkconfig.local
+firmware/sim/face/out/*.ppm
+dist/
+*.bin
+*.elf
+# misc
+.DS_Store
+*.log
